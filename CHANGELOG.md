@@ -44,6 +44,9 @@ All notable changes to this project are documented here. The format follows
   and a cut deleted or undone while it is open closes it cleanly.
 - **X in the middle of a drag no longer deletes the point being dragged.** In Edit Cut Surface
   the drag then jumped to the neighbouring point, or failed outright on the last one.
+- **Enter in the middle of a drag keeps the loop you see.** Finishing Edit Cut Surface with a
+  freehand point still held kept the quick draft of the surface, which leaves the cutter on the
+  old loop, so Build cut along the line from before the drag.
 
 ## [0.3.7-alpha] - 2026-09-21
 

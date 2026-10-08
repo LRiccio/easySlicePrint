@@ -367,6 +367,12 @@ class ESP_OT_edit_surface(bpy.types.Operator):
                 self.commit(context)
                 self.push_history()
                 return {'RUNNING_MODAL'}
+            if self.drag is not None:
+                # still dragging: the surface on screen is a draft, and a freehand draft
+                # leaves the cutter where it was - finish the drag with a full rebuild
+                self.drag = None
+                self.commit(context)
+                self.push_history()
             self.end(context)
             plan.refresh_record_frames(context, self.rec)
             self.report({'INFO'}, "Cut surface updated")

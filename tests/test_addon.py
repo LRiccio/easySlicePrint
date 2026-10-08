@@ -1105,7 +1105,14 @@ def test_edit_cut_surface_modal():
     ses.hover = ses.drag = 3
     ses._modal(bpy.context, FakeEvent('X', 'PRESS'))
     check(len(ses.points) == count and ses.drag == 3, "X does nothing in the middle of a drag")
-    ses.end(bpy.context)
+
+    # Enter in the middle of a drag: the last rebuild was a draft, the cut must not keep it
+    calls = []
+    real_commit = ses.commit
+    ses.commit = lambda context, draft=False: (calls.append(draft), real_commit(context, draft))
+    res = ses._modal(bpy.context, FakeEvent('RET', 'PRESS'))
+    check(res == {'FINISHED'} and calls and calls[-1] is False, "Enter ends a drag with a full rebuild")
+    check(ses._handle is None, "and the editor is closed")
 
     ses = edit_session(rec)
     plan.remove_record(bpy.context, 0)
