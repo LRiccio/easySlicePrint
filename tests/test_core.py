@@ -1237,6 +1237,75 @@ def test_ribbon_follows_a_silhouette():
     check(abs(centre.y) < 0.6 and abs(centre.x) < 4.5, f"placed where the whole circle fits ({centre})")
 
 
+def _island_bounds(me):
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.index_update()
+    out = []
+    for group in connectors._vert_islands(bm):
+        xs = [v.co.x for v in group]
+        ys = [v.co.y for v in group]
+        zs = [v.co.z for v in group]
+        out.append(((min(xs), max(xs)), (min(ys), max(ys)), (min(zs), max(zs))))
+    bm.free()
+    return sorted(out)
+
+
+def test_several_connectors_on_one_cut():
+    """Several pins on one contact: each one gets a socket of its own, grown round itself.
+
+    The socket used to be grown about the connector's origin, which is right for one
+    pin in the middle and wrong for any pin off to the side - a lobe duplicated in edit
+    mode, or a pin of a multi-pin layout: its socket slid outwards, too wide on the
+    outer side and cutting into the pin on the inner one.
+    """
+    print("== several connectors on one cut")
+    reset_scene()
+    offsets = [(-2.0, 0.0), (0.0, 0.0), (2.0, 0.5)]
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, 1)), 4.0, 5.0)
+    pin = connectors.connector_mesh('CYLINDER', None, pm, "pins", offsets=offsets)
+    socket = connectors.connector_mesh(
+        'CYLINDER', None, pm, "sockets", radial_extra=0.1, tip_extra=0.2, offsets=offsets
+    )
+    pins, sockets = _island_bounds(pin), _island_bounds(socket)
+    check(len(pins) == 3 and len(sockets) == 3, f"three pins, three sockets ({len(pins)}, {len(sockets)})")
+    worst = max(
+        abs(gap - 0.1)
+        for a, b in zip(pins, sockets)
+        for gap in (a[0][0] - b[0][0], b[0][1] - a[0][1], a[1][0] - b[1][0], b[1][1] - a[1][1])
+    )
+    check(worst < 1e-4, f"every socket clears its own pin by 0.1 mm on every side (off by {worst:.5f})")
+    check(
+        all(abs((b[2][1] - a[2][1]) - 0.2) < 1e-4 for a, b in zip(pins, sockets)),
+        "and is 0.2 mm deeper at the tip",
+    )
+
+    # a lobe duplicated by hand in edit mode is one more island of the preview mesh
+    bm = connectors.unit_layout_bmesh('BOX', None, [(-1.5, 0.0), (1.5, 0.0)])
+    edited = mesh_utils.bmesh_to_mesh(bm, "ESP_Pin_two_lobes")
+    bm.free()
+    hand = connectors.connector_mesh('BOX', None, pm, "hand", radial_extra=0.1, unit_mesh=edited)
+    lobes = _island_bounds(hand)
+    check(
+        len(lobes) == 2 and abs(lobes[0][0][1] - (-1.0 * 4.0 + 0.1)) < 1e-4,
+        f"a hand made second lobe is cleared on its inner side too ({lobes[0][0][1]:.3f})",
+    )
+
+    # where the pins go: a long thin face takes them in a row down its middle
+    strip_v = [Vector((-30, -5, 0)), Vector((30, -5, 0)), Vector((30, 5, 0)), Vector((-30, 5, 0))]
+    strip_f = [(0, 1, 2, 3)]
+    pts = section.spread_points(strip_v, strip_f, Vector((0, 0, 1)), 3, 3.5, 6.0)
+    check(len(pts) == 3, f"three pins fit on a 60 x 10 face ({len(pts)})")
+    xs = sorted(p.x for p in pts)
+    check(all(abs(p.y) < 0.3 for p in pts), f"on the middle line of the strip ({[round(p.y, 2) for p in pts]})")
+    check(xs[0] < -24.0 and abs(xs[1]) < 1.5 and xs[2] > 24.0, f"spread from end to end ({[round(x, 1) for x in xs]})")
+    check(
+        min(min(abs(p.x - 30), abs(p.x + 30), abs(p.y - 5), abs(p.y + 5)) for p in pts) >= 3.5 - 1e-6,
+        "each one keeps its distance from the outline",
+    )
+    check(section.spread_points(strip_v, strip_f, Vector((0, 0, 1)), 12, 3.5, 6.0) == [], "too many do not fit")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1259,6 +1328,7 @@ if __name__ == "__main__":
     test_connector_fits_the_section()
     test_runs_and_bands()
     test_ribbon_follows_a_silhouette()
+    test_several_connectors_on_one_cut()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

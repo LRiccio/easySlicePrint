@@ -116,6 +116,22 @@ def connector_source(context):
     return s, False
 
 
+def _layout_note(layout, rec):
+    """Say so when the cut face could not take every connector asked for, or only smaller."""
+    names = [rec.pin_a] + ([rec.pin_b] if rec.two_contact else [])
+    for i, name in enumerate(names):
+        pin = bpy.data.objects.get(name)
+        if pin is None:
+            continue
+        placed = int(pin.get("esp_layout_count", 1))
+        scale = float(pin.get("esp_layout_scale", 1.0))
+        where = f"Contact {i + 1}: " if len(names) > 1 else ""
+        if placed < rec.pin_count:
+            layout.label(text=f"{where}only {placed} of {rec.pin_count} fit on this cut", icon='ERROR')
+        elif scale < 0.999:
+            layout.label(text=f"{where}{placed} connectors, shrunk to {scale * 100:.0f}% to fit", icon='INFO')
+
+
 class ESP_PT_connector(ESPPanel, bpy.types.Panel):
     bl_label = "Connector"
     bl_parent_id = "ESP_PT_main"
@@ -133,6 +149,9 @@ class ESP_PT_connector(ESPPanel, bpy.types.Panel):
         row = col.row(align=True)
         row.prop(src, "shape", text="Shape")
         row.operator("esp.connector_library", text="", icon='ASSET_MANAGER')
+        col.prop(src, "pin_count")
+        if is_record and src.pin_count > 1:
+            _layout_note(col, src)
         col.row(align=True).prop(src, "size_preset", expand=True)
         row = col.row(align=True)
         row.enabled = src.size_preset == 'CUSTOM'

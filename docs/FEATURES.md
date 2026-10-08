@@ -33,6 +33,7 @@ below is an original implementation; nothing was copied.
 | Cut surface with a usable pivot | generated surfaces get their own origin at the patch centre (*Surface Origin*: Cut Surface / Target Object) | `plan.surface_origin_point` |
 | Edit curve/freehand points | point editor modal: drag, Ctrl+LMB add, X delete, G slide whole cut, R reset, Ctrl+Z undo; a two-contact cut edits each contact on its own (**Edit Cut Surface** / **2nd**) | `ESP_OT_edit_surface` |
 | Connector on/off, shape, size, width/height | Connector panel (per next cut or per selected cut; new cuts copy the selected cut's settings) | `ESP_PT_connector` |
+| Several connectors on one cut | *Count* (1-8) in the Connector panel; pins spread over the cut face as far apart as the material allows, each with a rim of material round its socket; preset sizes shrink, then fewer are placed, when they do not fit (the panel says so) | `plan.compute_layout`, `section.spread_points` |
 | Built-in + custom connector shapes | Cylinder, Tapered, Hexagon, Box + `ESP_Connectors` library (unit-box convention) | `core/connectors.py` |
 | Printed parts that actually fit together | *Printer Clearance* set once per printer in the preferences; each cut picks Press / Snug / Easy / Loose / Custom, and the panel shows how much wider the socket comes out | `ESP_Preferences.printer_clearance_mm`, `plan.apply_fit` |
 | Clearance, asymmetric tip, tip extra | **Fit & Clearance** sub-panel | `ESP_PT_fit` |

@@ -115,6 +115,18 @@ def connector_props(update=None):
             items=connectors.shape_enum_items,
             update=update,
         ),
+        'pin_count': IntProperty(
+            name="Count",
+            description=(
+                "How many connectors to put on this cut. They are spread over the cut face as far "
+                "apart as the material allows; preset sizes shrink a little, and fewer are placed, "
+                "when they do not fit"
+            ),
+            default=1,
+            min=1,
+            max=8,
+            update=update,
+        ),
         'size_preset': EnumProperty(
             name="Size",
             items=[(i, n, d) for i, n, d, _f in connectors.SIZE_PRESETS],

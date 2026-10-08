@@ -70,7 +70,7 @@
 | **Two Contacts / Base Split** | two contacts cut as one operation (e.g. both feet on a base), each with its own connector |
 | **Quick Cut mode** | immediate final parts, no history |
 | **Plan mode** | non-destructive: plan several cuts, edit/disable/remove them, move the cut planes and connectors, **Build** when ready, **Back to Plan** to keep editing, **Approve** to finish. The original model is never modified |
-| **Connectors** | automatic pin + socket: Cylinder, Tapered, Hexagon, Box or **custom meshes** from your own connector library; size presets or explicit width/height; clearance; asymmetric tip (deeper socket); choose which side carries the pin; move/rotate/scale the connector freely |
+| **Connectors** | automatic pin + socket: Cylinder, Tapered, Hexagon, Box or **custom meshes** from your own connector library; size presets or explicit width/height; one or several per cut (*Count*); clearance; asymmetric tip (deeper socket); choose which side carries the pin; move/rotate/scale the connector freely |
 | **Cut Gap (kerf)** | material removed along the cut so parts don't touch |
 | **Remesh** | optional voxel remesh of the built parts |
 | **Exploded view** | move the parts apart to inspect the connectors, collapse back |

@@ -624,6 +624,108 @@ def test_plan_workflow():
     draw_all_panels(ctx)
 
 
+def section_contact(obj, z):
+    """A plane cut at height z taken from the model's own cross section, as the tool makes it."""
+    d = plan.ContactData('STRAIGHT')
+    co, no = Vector((0, 0, z)), Vector((0, 0, 1))
+    d.plane_co, d.plane_no = co, no
+    d.center_hint, d.anchor = co, co
+    patch = plan.straight_section(bpy.context, obj, co, no, None, co)
+    plan.fill_straight_contact(d, patch, None)
+    return d
+
+
+def make_slab(name="Slab", size=(60.0, 10.0, 40.0)):
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=size, verts=bm.verts)
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    return obj
+
+
+def loose_pieces(me):
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.index_update()
+    n = len(connectors._vert_islands(bm))
+    bm.free()
+    return n
+
+
+def test_several_connectors():
+    print("== several connectors on one cut")
+    sc = reset_scene()
+    ctx = bpy.context
+    s = sc.esp
+    s.mode = 'PLAN'
+    s.pin_count = 3
+    obj = make_slab()
+    rec = plan.add_record(ctx, obj, 'STRAIGHT', [section_contact(obj, 0.0)])
+    pin = bpy.data.objects.get(rec.pin_a)
+    check(rec.pin_count == 3, "a new cut takes the Count of the settings")
+    check(loose_pieces(pin.data) == 3, f"the preview shows three pins ({loose_pieces(pin.data)})")
+    check(pin.get("esp_layout_count") == 3, "and records that all three fit")
+    xs = sorted(
+        (pin.matrix_world @ Vector((ox, oy, 0))).x
+        for ox, oy in zip(list(pin["esp_layout"])[::2], list(pin["esp_layout"])[1::2])
+    )
+    check(
+        xs[0] < -15.0 and xs[2] > 15.0, f"spread along the long side of the 60 x 10 face ({[round(x, 1) for x in xs]})"
+    )
+
+    moved = pin.location.x + 1.0
+    pin.location.x = moved
+    rec.fit_preset = 'EASY'
+    check(abs(pin.location.x - moved) < 1e-3, "moving the group by hand survives a settings change")
+    rec.pin_count = 2
+    check(loose_pieces(pin.data) == 2, "a new Count rebuilds the preview")
+    rec.pin_count = 3
+
+    res = bpy.ops.esp.build()
+    col = bpy.data.collections.get(s.built_collection)
+    check(res == {'FINISHED'} and col is not None and len(col.objects) == 2, "the build makes two parts")
+    for o in col.objects:
+        check(loose_pieces(o.data) == 1, f"{o.name} is one piece, every pin fused to it")
+        non, boundary, _t = mesh_utils.manifold_report(o.data)
+        check(non == 0 and boundary == 0, f"{o.name} closed manifold")
+    a, b = sorted(col.objects, key=lambda o: mesh_utils.mesh_volume(o.data))
+    check(
+        mesh_utils.mesh_volume(b.data) - mesh_utils.mesh_volume(a.data) > 3 * 50.0, "three pins moved material across"
+    )
+    bpy.ops.esp.return_to_plan()
+
+    # more than the face can take: preset pins shrink, then fewer are placed, and the panel says so
+    rec.size_preset = 'CUSTOM'
+    rec.pin_width_mm = 8.0
+    rec.pin_count = 8
+    check(pin.get("esp_layout_count") < 8, f"only {pin.get('esp_layout_count')} of 8 custom 8 mm pins fit")
+    check(loose_pieces(pin.data) == pin.get("esp_layout_count"), "and the preview shows the ones that do")
+    draw_all_panels(ctx)
+
+    # one connector is still the connector it always was
+    rec.pin_count = 1
+    check(loose_pieces(pin.data) == 1 and list(pin["esp_layout"]) == [0.0, 0.0], "Count 1 is one centred pin")
+
+    # Quick mode takes the same setting
+    s.mode = 'QUICK'
+    s.pin_count = 2
+    from easy_slice_print.ops_tools import quick_cut
+
+    slab = make_slab("QuickSlab")
+    a, b, _secs = quick_cut(ctx, slab, [section_contact(slab, 0.0)])
+    pinned = a if mesh_utils.mesh_volume(a.data) > mesh_utils.mesh_volume(b.data) else b
+    lo, _hi = mesh_utils.mesh_bounds(pinned.data)
+    stubs = [v.co for v in pinned.data.vertices if v.co.z < lo.z + 0.01] if lo.z < -0.5 else []
+    check(lo.z < -0.5 and max(v.x for v in stubs) - min(v.x for v in stubs) > 20.0, "quick cut builds two pins apart")
+    check(loose_pieces(a.data) == 1 and loose_pieces(b.data) == 1, "both quick parts are one piece")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -845,6 +947,7 @@ if __name__ == "__main__":
     test_version()
     test_register()
     test_plan_workflow()
+    test_several_connectors()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()
