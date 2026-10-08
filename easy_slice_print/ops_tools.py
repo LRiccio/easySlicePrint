@@ -155,10 +155,15 @@ def quick_cut_steps(context, target, contacts):
     base_name = target.get("esp_base", target.name) if target.get("esp_part") else target.name
     col = plan.built_collection(scene, base_name)
     state = plan.ensure_evaluable(target)
+    cut = False
     try:
         a, b, secs = yield from cutting.perform_cut_steps(context, target, spec, ("_esp_new_a", "_esp_new_b"), col)
+        cut = True
     finally:
         plan.restore_visibility(target, state)
+        if not cut and len(col.objects) == 0:
+            # cancelled or failed before any part was made: no empty collection left over
+            bpy.data.collections.remove(col)
     la, lb = cutting.side_labels(mesh_utils.mesh_mass_centre(a.data), mesh_utils.mesh_mass_centre(b.data))
     a.name = f"{target.name}_{la}"
     b.name = f"{target.name}_{lb}"

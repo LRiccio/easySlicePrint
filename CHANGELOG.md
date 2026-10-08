@@ -121,6 +121,8 @@ All notable changes to this project are documented here. The format follows
   now asks you to save first or pick another folder, and reports a folder it cannot create.
 - **FBX export honours "1 unit = 1 mm".** STL and OBJ followed the preference, FBX did not: on a
   scene in metres every part came out a thousand times too big.
+- **A cancelled Quick Cut leaves no empty collection.** Pressing Esc before the parts were made
+  left an empty `ESP_Built_<model>` collection behind.
 
 ## [0.3.7-alpha] - 2026-09-21
 

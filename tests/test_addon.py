@@ -1129,8 +1129,13 @@ def test_quick_mode():
     s.mode = 'QUICK'
     s.size_preset = 'MEDIUM'
     diag = mesh_utils.object_world_diagonal(obj)
-    from easy_slice_print.ops_tools import quick_cut
+    from easy_slice_print.ops_tools import quick_cut, quick_cut_steps
 
+    # Esc on the job before the parts exist leaves nothing behind, not even their collection
+    steps = quick_cut_steps(bpy.context, obj, [plane_contact(0.0, diag)])
+    next(steps)
+    steps.close()
+    check(bpy.data.collections.get("ESP_Built_Quick") is None, "a cancelled quick cut leaves no empty collection")
     a, b, secs = quick_cut(bpy.context, obj, [plane_contact(0.0, diag)])
     check({a.name, b.name} == {"Quick_UPPER", "Quick_LOWER"}, f"quick names {a.name}/{b.name}")
     check(obj.hide_get(), "original kept hidden")
