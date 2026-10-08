@@ -1497,6 +1497,29 @@ def test_every_shape_gets_the_gap_it_asked_for():
         check(abs((socket_top.z - pin_top.z) - 0.3) < 1e-4, f"{shape}: and 0.3 mm deeper at the tip")
 
 
+def test_a_cancelled_cut_leaves_nothing_behind():
+    """Stopping a cut at any step - Esc on the job - leaves no meshes behind."""
+    print("== a cancelled cut leaves nothing behind")
+    reset_scene()
+    obj = make_cylinder("Cancelled")
+    verts, faces = surfaces.plane_patch(Vector((0, 0, 0)), Vector((0, 0, 1)), Vector((1, 0, 0)), 60)
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, -1)), 6.0, 7.0)
+    spec = cutting.CutSpec(
+        contacts=[cutting.ContactSpec(verts, faces, True, pm, 'CYLINDER', None)], gap=0.2, clearance=0.1
+    )
+    out = out_collection("cancel_out")
+    labels = [label for label in cutting.perform_cut_steps(bpy.context, obj, spec, ("A", "B"), out)]
+    for o in list(out.objects):
+        mesh_utils.remove_object(o)
+    for stop_at in range(len(labels)):
+        meshes = len(bpy.data.meshes)
+        steps = cutting.perform_cut_steps(bpy.context, obj, spec, ("A", "B"), out)
+        for _ in range(stop_at + 1):
+            next(steps)
+        steps.close()  # what the job driver does on Esc
+        check(len(bpy.data.meshes) == meshes, f"stopped at '{labels[stop_at]}': no meshes left behind")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1525,6 +1548,7 @@ if __name__ == "__main__":
     test_parts_are_named_by_where_their_mass_is()
     test_materials_survive_the_connectors()
     test_every_shape_gets_the_gap_it_asked_for()
+    test_a_cancelled_cut_leaves_nothing_behind()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

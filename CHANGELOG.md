@@ -85,6 +85,9 @@ All notable changes to this project are documented here. The format follows
   the gap and the narrow end of a Tapered pin 61%, so *Snug* fitted almost like *Press*. Every
   side face of the socket now sits exactly the gap away from the pin, whatever the shape —
   edited and custom connectors included.
+- **A cancelled cut leaves nothing behind.** Pressing Esc while a connector was being carved,
+  or a boolean failing part way, left the pin, the socket and half-built parts in the file as
+  orphan meshes.
 
 ## [0.3.7-alpha] - 2026-09-21
 

@@ -220,8 +220,10 @@ def split_mesh_steps(context, mesh, spec):
             slab_bm = surfaces.slab_from_patch(c.verts, c.faces, spec.gap)
             slab = mesh_utils.bmesh_to_mesh(slab_bm, "_esp_slab")
             slab_bm.free()
-            res = mesh_utils.boolean_mesh(context, work, slab, 'DIFFERENCE', spec.solver)
-            mesh_utils.remove_mesh(slab)
+            try:
+                res = mesh_utils.boolean_mesh(context, work, slab, 'DIFFERENCE', spec.solver)
+            finally:
+                mesh_utils.remove_mesh(slab)
             mesh_utils.remove_mesh(work)
             work = res
         if len(work.polygons) == 0:
@@ -290,72 +292,78 @@ def connector_missed_message(n, total, missed):
     )
 
 
+def _connector_pair(c, matrix, spec):
+    """(pin, socket) meshes for contact `c`, aimed by `matrix`."""
+    pin = connectors.connector_mesh(c.shape, c.custom_obj, matrix, "_esp_pin", unit_mesh=c.pin_mesh, offsets=c.offsets)
+    socket = connectors.connector_mesh(
+        c.shape,
+        c.custom_obj,
+        matrix,
+        "_esp_socket",
+        radial_extra=spec.clearance,
+        tip_extra=spec.tip_extra,
+        unit_mesh=c.pin_mesh,
+        offsets=c.offsets,
+    )
+    return pin, socket
+
+
 def apply_connectors_steps(context, mesh_a, mesh_b, spec):
+    """Add every contact's pin to one part and carve its socket out of the other.
+
+    The input parts are consumed. Whatever this makes and has not handed back - the
+    pin and socket in flight, a half finished boolean, parts made by an earlier
+    connector - is removed when it stops early: a cancelled job, a connector that
+    misses its part, a boolean that raises.
+    """
     total = sum(1 for c in spec.contacts if c.add_pin and c.pin_matrix is not None)
     n = 0
-    half = None  # first half finished; dropped if the job is cancelled between the two booleans
+    temps = []  # pin, socket and boolean results of the connector in progress
+    owned = []  # parts made here, until they are returned
+    done = False
     try:
         for index, c in enumerate(spec.contacts):
             if not c.add_pin or c.pin_matrix is None:
                 continue
             n += 1
             yield f"adding connector {n}/{total}" if total > 1 else "adding the connector"
-            pin = connectors.connector_mesh(
-                c.shape, c.custom_obj, c.pin_matrix, "_esp_pin", unit_mesh=c.pin_mesh, offsets=c.offsets
-            )
-            socket = connectors.connector_mesh(
-                c.shape,
-                c.custom_obj,
-                c.pin_matrix,
-                "_esp_socket",
-                radial_extra=spec.clearance,
-                tip_extra=spec.tip_extra,
-                unit_mesh=c.pin_mesh,
-                offsets=c.offsets,
-            )
             pin_target, socket_target = (mesh_a, mesh_b) if spec.pin_side == 'A' else (mesh_b, mesh_a)
-            if index > 0 and points_into(c.pin_matrix, pin_target, socket_target):
+            matrix = c.pin_matrix
+            if index > 0 and points_into(matrix, pin_target, socket_target):
                 # The pin part is the pin side of the FIRST contact. Every other contact's
                 # pin was aimed with its own surface normal, and that one may face the
                 # other way (a loop or a curve drawn in the opposite direction): the pin
                 # would then be built upside down - a tapered pin wide end out - with the
                 # tip extra at its buried end. Turn it round to point into the socket part.
-                matrix = connectors.flip_matrix(c.pin_matrix)
-                for m in (pin, socket):
-                    mesh_utils.remove_mesh(m)
-                pin = connectors.connector_mesh(
-                    c.shape, c.custom_obj, matrix, "_esp_pin", unit_mesh=c.pin_mesh, offsets=c.offsets
-                )
-                socket = connectors.connector_mesh(
-                    c.shape,
-                    c.custom_obj,
-                    matrix,
-                    "_esp_socket",
-                    radial_extra=spec.clearance,
-                    tip_extra=spec.tip_extra,
-                    unit_mesh=c.pin_mesh,
-                    offsets=c.offsets,
-                )
+                matrix = connectors.flip_matrix(matrix)
+            pin, socket = _connector_pair(c, matrix, spec)
+            temps += [pin, socket]
             half = mesh_utils.boolean_mesh(context, pin_target, pin, 'UNION', spec.solver)
+            temps.append(half)
             yield f"carving socket {n}/{total}" if total > 1 else "carving the socket"
             carved = mesh_utils.boolean_mesh(context, socket_target, socket, 'DIFFERENCE', spec.solver)
+            temps.append(carved)
             missed = [
                 what
                 for what, out, src in (("pin", half, pin_target), ("socket", carved, socket_target))
                 if mesh_utils.same_shape(out, src)
             ]
             if missed:
-                for m in (pin, socket, carved):
-                    mesh_utils.remove_mesh(m)
                 raise CutError(connector_missed_message(n, total, missed))
             new_a, new_b = (half, carved) if spec.pin_side == 'A' else (carved, half)
-            half = None
             for m in (pin, socket, mesh_a, mesh_b):
                 mesh_utils.remove_mesh(m)
+            temps.clear()
+            owned = [new_a, new_b]
             mesh_a, mesh_b = new_a, new_b
+        done = True
         return mesh_a, mesh_b
     finally:
-        mesh_utils.remove_mesh(half)
+        for m in temps:
+            mesh_utils.remove_mesh(m)
+        if not done:
+            for m in owned:
+                mesh_utils.remove_mesh(m)
 
 
 def apply_connectors(context, mesh_a, mesh_b, spec):
