@@ -8,8 +8,6 @@ the socket part, -z is the half embedded in the pin part.
 The final connector is unit_mesh @ Matrix(location, rotation, scale(w, w, h)).
 """
 
-import math
-
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
@@ -213,6 +211,8 @@ def connector_mesh(shape, custom_obj, matrix, name, radial_extra=0.0, tip_extra=
     if radial_extra > 0.0 or tip_extra > 0.0:
         _grow_for_socket(bm, (sx, sy, sz), radial_extra, tip_extra)
     bmesh.ops.transform(bm, matrix=matrix, verts=bm.verts)
+    if matrix.is_negative:  # a mirrored matrix (`flip_matrix`) turns the faces inside out
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
     me = mesh_utils.bmesh_to_mesh(bm, name)
     bm.free()
     return me
@@ -247,8 +247,14 @@ def connector_matrix(center, protrude_dir, width_bu, height_bu, up_hint=None):
 
 
 def flip_matrix(matrix):
-    """Same location/scale, protrusion direction reversed (rotate 180 deg about local X)."""
-    return matrix @ Matrix.Rotation(math.pi, 4, 'X')
+    """Same location, scale and layout, protrusion direction reversed: local Z mirrored.
+
+    A half turn about local X would reverse Z too, but it also mirrors Y - every pin of a
+    multi-pin layout, and any shape not symmetric in Y, would land somewhere else than
+    the preview shows, possibly outside the part. The mirrored matrix is negative, which
+    `connector_mesh` turns back right side out.
+    """
+    return matrix @ Matrix.Diagonal((1.0, 1.0, -1.0, 1.0))
 
 
 # ----------------------------------------------------------------------------

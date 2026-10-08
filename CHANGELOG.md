@@ -71,6 +71,11 @@ All notable changes to this project are documented here. The format follows
 - **Quick cut names the parts by where their volume is.** UPPER / LOWER (and LEFT / RIGHT,
   FRONT / BACK) compared the average of each part's vertices, which a densely meshed pin pulls
   towards itself: a thin top slice carrying the pins could come out named LOWER.
+- **Both pins of a Base Split point the same way.** The part that carries the pins is chosen by
+  the first contact, but each pin was aimed by its own contact's surface; when the second loop
+  or curve was drawn the other way round its pin was built upside down — a tapered pin with its
+  wide end out, which cannot be assembled. Every pin now points from the pin part into the
+  socket part.
 
 ## [0.3.7-alpha] - 2026-09-21
 

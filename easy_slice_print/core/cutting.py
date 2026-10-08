@@ -257,6 +257,28 @@ def split_mesh(context, mesh, spec):
     return drain(split_mesh_steps(context, mesh, spec))
 
 
+def _inside(bvh, p):
+    loc, nor, _i, _d = bvh.find_nearest(p)
+    return loc is not None and (p - loc).dot(nor) < 0.0
+
+
+def points_into(matrix, pin_part, socket_part):
+    """True when a pin with this matrix is aimed the wrong way: into its own part.
+
+    +Z of a connector matrix is where the pin protrudes - into the socket part. A point
+    a little down -Z from the cut has to be in the pin part; when it is in the socket
+    part instead, the pin is upside down.
+    """
+    z = matrix.col[2].xyz
+    reach = z.length
+    if reach < 1e-12:
+        return False
+    probe = matrix.translation - z.normalized() * reach * 0.5
+    in_pin = _inside(mesh_utils.bvh_from_mesh(pin_part), probe)
+    in_socket = _inside(mesh_utils.bvh_from_mesh(socket_part), probe)
+    return in_socket and not in_pin
+
+
 def connector_missed_message(n, total, missed):
     """A connector whose pin or socket left its part untouched does not cross the cut."""
     which = f"Connector {n} of {total}" if total > 1 else "The connector"
@@ -273,7 +295,7 @@ def apply_connectors_steps(context, mesh_a, mesh_b, spec):
     n = 0
     half = None  # first half finished; dropped if the job is cancelled between the two booleans
     try:
-        for c in spec.contacts:
+        for index, c in enumerate(spec.contacts):
             if not c.add_pin or c.pin_matrix is None:
                 continue
             n += 1
@@ -292,6 +314,28 @@ def apply_connectors_steps(context, mesh_a, mesh_b, spec):
                 offsets=c.offsets,
             )
             pin_target, socket_target = (mesh_a, mesh_b) if spec.pin_side == 'A' else (mesh_b, mesh_a)
+            if index > 0 and points_into(c.pin_matrix, pin_target, socket_target):
+                # The pin part is the pin side of the FIRST contact. Every other contact's
+                # pin was aimed with its own surface normal, and that one may face the
+                # other way (a loop or a curve drawn in the opposite direction): the pin
+                # would then be built upside down - a tapered pin wide end out - with the
+                # tip extra at its buried end. Turn it round to point into the socket part.
+                matrix = connectors.flip_matrix(c.pin_matrix)
+                for m in (pin, socket):
+                    mesh_utils.remove_mesh(m)
+                pin = connectors.connector_mesh(
+                    c.shape, c.custom_obj, matrix, "_esp_pin", unit_mesh=c.pin_mesh, offsets=c.offsets
+                )
+                socket = connectors.connector_mesh(
+                    c.shape,
+                    c.custom_obj,
+                    matrix,
+                    "_esp_socket",
+                    radial_extra=spec.clearance,
+                    tip_extra=spec.tip_extra,
+                    unit_mesh=c.pin_mesh,
+                    offsets=c.offsets,
+                )
             half = mesh_utils.boolean_mesh(context, pin_target, pin, 'UNION', spec.solver)
             yield f"carving socket {n}/{total}" if total > 1 else "carving the socket"
             carved = mesh_utils.boolean_mesh(context, socket_target, socket, 'DIFFERENCE', spec.solver)

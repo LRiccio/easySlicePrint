@@ -327,6 +327,43 @@ def test_two_contacts():
     mn, mx = mesh_utils.mesh_bounds(a.data)
     check(mx.x - mn.x > 35, "both legs joined in part A")
 
+    # the second contact drawn the other way round: its normal points into the base, but
+    # its pin still belongs to the legs and has to point down into the base like the first
+    contacts = []
+    for x, up in ((-15.0, 1.0), (15.0, -1.0)):
+        verts, faces = surfaces.plane_patch(Vector((x, 0, 3.0)), Vector((0, 0, up)), Vector((1, 0, 0)), 20.0)
+        pm = connectors.connector_matrix(Vector((x, 0, 3.0)), Vector((0, 0, -up)), 4.0, 5.0)
+        contacts.append(cutting.ContactSpec(verts, faces, True, pm, 'TAPERED', None))
+    spec = cutting.CutSpec(contacts=contacts, gap=0.2, clearance=0.15, tip_extra=0.2, pin_side='A')
+    a, b, _secs = cutting.perform_cut(bpy.context, fig, spec, ("figure2", "base2"), col)
+    legs_part, base_part = (a, b) if mesh_utils.mesh_bounds(a.data)[1].z > 30 else (b, a)
+    for x in (-15.0, 15.0):
+        # the pin below the cut: its tip ring, and the ring where it leaves the cut face
+        rings = [
+            (v.co.z, ((v.co.x - x) ** 2 + v.co.y**2) ** 0.5)
+            for v in legs_part.data.vertices
+            if abs(v.co.x - x) < 5 and v.co.z < 3.5
+        ]
+        tip = max(r for z, r in rings if z < -1.9)
+        root = max(r for z, r in rings if z > -1.9 and r < 5.0)
+        check(tip < root, f"the tapered pin at x={x:+.0f} narrows towards its tip ({root:.2f} -> {tip:.2f})")
+
+    # turning a pin round keeps where its pins are: a layout off-centre in y stays put
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, 1)), 4.0, 5.0)
+    offsets = [(-1.5, 1.0), (1.5, 1.0)]
+    straight = connectors.connector_mesh('TAPERED', None, pm, "straight", offsets=offsets)
+    turned = connectors.connector_mesh('TAPERED', None, connectors.flip_matrix(pm), "turned", offsets=offsets)
+    ys = [v.co.y for v in turned.vertices]
+    check(min(ys) > 0.5, f"a flipped layout keeps its pins on the same side ({min(ys):.2f})")
+    bm = bmesh.new()
+    bm.from_mesh(turned)
+    check(bm.calc_volume(signed=True) > 0.0, "and the flipped pin is right side out")
+    bm.free()
+    top = [v.co for v in turned.vertices if v.co.z < -4.9]
+    check(max(abs(v.y - 4.0) for v in top) < 1.6, "its tip now points down, still narrow")
+    for m in (straight, turned):
+        mesh_utils.remove_mesh(m)
+
 
 def test_custom_connector_and_remesh():
     print("== custom connector + remesh")
