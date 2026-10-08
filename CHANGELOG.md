@@ -68,6 +68,9 @@ All notable changes to this project are documented here. The format follows
   now measured on both sides of the cut, and a preset pin is kept short enough to leave a wall
   past its tip and its socket. A *Custom* height is left as typed, and the panel warns when the
   part is too shallow for it.
+- **Quick cut names the parts by where their volume is.** UPPER / LOWER (and LEFT / RIGHT,
+  FRONT / BACK) compared the average of each part's vertices, which a densely meshed pin pulls
+  towards itself: a thin top slice carrying the pins could come out named LOWER.
 
 ## [0.3.7-alpha] - 2026-09-21
 

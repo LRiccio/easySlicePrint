@@ -284,6 +284,29 @@ def mesh_centroid(mesh):
     return Vector(arr.mean(axis=0).tolist())
 
 
+def mesh_mass_centre(mesh):
+    """Centre of the volume a closed mesh encloses (signed tetrahedra from the origin).
+
+    Unlike the vertex average it does not move towards wherever the mesh is densest:
+    a pin of a few hundred vertices on a slice of eight carries the average with it.
+    Falls back to the vertex average for a mesh that encloses no volume.
+    """
+    mesh.calc_loop_triangles()
+    n = len(mesh.loop_triangles)
+    if n == 0:
+        return mesh_centroid(mesh)
+    tris = np.empty(n * 3, dtype=np.int64)
+    mesh.loop_triangles.foreach_get('vertices', tris)
+    co = mesh_vertex_array(mesh).astype(np.float64)
+    a, b, c = co[tris[0::3]], co[tris[1::3]], co[tris[2::3]]
+    vol = np.einsum('ij,ij->i', a, np.cross(b, c)) / 6.0
+    total = vol.sum()
+    if abs(total) < 1e-12:
+        return mesh_centroid(mesh)
+    centre = ((a + b + c) / 4.0 * vol[:, None]).sum(axis=0) / total
+    return Vector(centre.tolist())
+
+
 def mesh_bounds(mesh):
     arr = mesh_vertex_array(mesh)
     if len(arr) == 0:

@@ -146,7 +146,7 @@ def quick_cut_steps(context, target, contacts):
         a, b, secs = yield from cutting.perform_cut_steps(context, target, spec, ("_esp_new_a", "_esp_new_b"), col)
     finally:
         plan.restore_visibility(target, state)
-    la, lb = cutting.side_labels(mesh_utils.mesh_centroid(a.data), mesh_utils.mesh_centroid(b.data))
+    la, lb = cutting.side_labels(mesh_utils.mesh_mass_centre(a.data), mesh_utils.mesh_mass_centre(b.data))
     a.name = f"{target.name}_{la}"
     b.name = f"{target.name}_{lb}"
     a.data.name = a.name

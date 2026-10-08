@@ -1373,6 +1373,32 @@ def test_a_connector_off_the_cut_face():
     check(len(out.polygons) == len(a.polygons), "a cutter that misses leaves the mesh as it was")
 
 
+def test_parts_are_named_by_where_their_mass_is():
+    """UPPER / LOWER follow the parts' volume, not where their vertices crowd."""
+    print("== parts are named by where their mass is")
+    reset_scene()
+
+    def box(z0, z1, extra=None):
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=(40.0, 40.0, z1 - z0), verts=bm.verts)
+        bmesh.ops.translate(bm, vec=(0.0, 0.0, (z0 + z1) * 0.5), verts=bm.verts)
+        if extra is not None:
+            bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0, matrix=Matrix.Translation(extra))
+        me = bpy.data.meshes.new("box")
+        bm.to_mesh(me)
+        bm.free()
+        return me
+
+    # a 4 mm slice on top carrying a dense pin far below, a plain block under it
+    slice_ = box(16.0, 20.0, extra=(0.0, 0.0, -15.0))
+    block = box(-20.0, 16.0)
+    check(mesh_utils.mesh_centroid(slice_).z < mesh_utils.mesh_centroid(block).z, "the vertex average is fooled")
+    check(abs(mesh_utils.mesh_mass_centre(slice_).z - 18.0) < 0.2, "the mass centre is in the slice")
+    names = cutting.side_labels(mesh_utils.mesh_mass_centre(slice_), mesh_utils.mesh_mass_centre(block))
+    check(names == ("UPPER", "LOWER"), f"the slice on top is UPPER ({names})")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1398,6 +1424,7 @@ if __name__ == "__main__":
     test_several_connectors_on_one_cut()
     test_mirrored_object()
     test_a_connector_off_the_cut_face()
+    test_parts_are_named_by_where_their_mass_is()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)
