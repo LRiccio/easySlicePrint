@@ -11,7 +11,16 @@ from mathutils import Vector
 
 from . import draw, jobs, overlay, plan
 from .core import cutting, mesh_utils
-from .ops_tools import CURSOR_DRAW, NAV_EVENTS, dist2d, restore_cursor, set_cursor, window_region
+from .ops_tools import (
+    CURSOR_DRAW,
+    NAV_EVENTS,
+    dist2d,
+    over_view,
+    restore_cursor,
+    set_cursor,
+    view_region_under,
+    window_region,
+)
 
 
 def active_record(context):
@@ -188,7 +197,10 @@ class ESP_OT_edit_surface(bpy.types.Operator):
             return {'CANCELLED'}
         self.area = context.area
         self.window = context.window
-        self.region = window_region(self.area)
+        if context.region is not None and context.region.type == 'WINDOW':
+            self.region = context.region
+        else:
+            self.region = view_region_under(self.area, event) or window_region(self.area)
         self.rv3d = self.region.data
         self.sobj = sobj
         self.kind = sobj.get("esp_kind", 'CURVED')
@@ -207,7 +219,8 @@ class ESP_OT_edit_surface(bpy.types.Operator):
         self.changed = False
         self._handle = bpy.types.SpaceView3D.draw_handler_add(self._draw_cb, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
-        set_cursor(self.window, CURSOR_DRAW)
+        self._cursor_on = False
+        self.point_cursor(over_view(self.area, self.region, event))
         context.workspace.status_text_set(
             "Drag point: LMB | Add: Ctrl+LMB | Delete: X | Slide all: G | Reset: R | Undo: Ctrl+Z | Finish: Enter / Esc"
         )
@@ -274,16 +287,66 @@ class ESP_OT_edit_surface(bpy.types.Operator):
                 best, best_d = i, d
         return best
 
+    def point_cursor(self, on):
+        """The pencil over the view only; the normal arrow over the interface."""
+        if on == getattr(self, "_cursor_on", False):
+            return
+        self._cursor_on = on
+        if on:
+            set_cursor(self.window, CURSOR_DRAW)
+        else:
+            restore_cursor(self.window)
+
     def end(self, context):
         if self._handle is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
         restore_cursor(getattr(self, "window", None))
-        context.workspace.status_text_set(None)
-        self.area.tag_redraw()
+        self._cursor_on = False
+        try:
+            context.workspace.status_text_set(None)
+        except Exception:
+            pass
+        try:
+            self.area.tag_redraw()
+        except Exception:
+            pass
+
+    def surface_alive(self):
+        """False once the surface or its record is gone - deleted, or undone from the menu."""
+        try:
+            self.sobj.name  # noqa: B018 - touching it is the test
+            self.rec.name  # noqa: B018
+        except ReferenceError:
+            return False
+        return True
 
     # -- modal ------------------------------------------------------------------
     def modal(self, context, event):
+        """Every way out goes through `end`, an unexpected error included (see CutToolBase.modal)."""
+        try:
+            return self._modal(context, event)
+        except Exception as exc:
+            self.end(context)
+            self.report({'ERROR'}, f"Edit Cut Surface stopped: {exc}")
+            return {'CANCELLED'}
+
+    def _modal(self, context, event):
+        if not self.surface_alive():
+            self.end(context)
+            self.report({'WARNING'}, "The cut was deleted or changed by Undo - editing stopped")
+            return {'CANCELLED'}
+        busy = self.drag is not None or self.slide is not None
+        if not busy and event.type not in {'ESC', 'RET', 'NUMPAD_ENTER'}:
+            under = view_region_under(self.area, event)
+            if under is not None and under.as_pointer() != self.region.as_pointer():
+                self.region = under  # Quad View: edit in the view the mouse is in
+                self.rv3d = under.data
+            if under is None:
+                # on the sidebar, a header or another editor: the click is the interface's
+                self.point_cursor(False)
+                return {'PASS_THROUGH'}
+        self.point_cursor(True)
         self.mouse = (event.mouse_x - self.region.x, event.mouse_y - self.region.y)
         if event.type in NAV_EVENTS:
             return {'PASS_THROUGH'}

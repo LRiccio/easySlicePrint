@@ -38,6 +38,10 @@ All notable changes to this project are documented here. The format follows
   area, a locked side view, so the other three ignored the mouse — and since clicks off the
   tool's view reach the interface, a click there selected objects instead. The tool now works
   in the view it was started from, and moves to whichever view the mouse is in between strokes.
+- **Edit Cut Surface leaves the sidebar usable too.** The point editor took every click in the
+  window, like the cut tools did, so a click on the sidebar could grab a control point. Off the
+  view the clicks now reach the interface, it works in the view under the mouse in Quad View,
+  and a cut deleted or undone while it is open closes it cleanly.
 
 ## [0.3.7-alpha] - 2026-09-21
 

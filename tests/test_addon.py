@@ -1048,6 +1048,66 @@ def test_an_armed_tool_cleans_up_after_itself():
     tool.end(bpy.context)
 
 
+def edit_session(rec):
+    """Edit Cut Surface as its `invoke` leaves it, run without a 3D viewport.
+
+    The operator cannot be instantiated outside Blender's operator machinery, so its
+    methods are borrowed onto a plain object carrying the state `invoke` sets up.
+    """
+    from easy_slice_print.ops_plan import ESP_OT_edit_surface
+
+    class Session:
+        pass
+
+    for name, fn in vars(ESP_OT_edit_surface).items():
+        if callable(fn) and not name.startswith("__") and name not in ("bl_rna",):
+            setattr(Session, name, fn)
+    ses = Session()
+    ses.reports = []
+    ses.report = lambda kind, msg: ses.reports.append(msg)
+    ses.rec = rec
+    ses.sobj = bpy.data.objects.get(rec.surface_a)
+    view = FakeRegion('WINDOW', 0, 0, 1000, 800)
+    ses.area = FakeArea([view, FakeRegion('UI', 800, 0, 200, 800)])
+    ses.window = None
+    ses.region = view
+    ses.rv3d = None
+    ses.kind = ses.sobj.get("esp_kind")
+    ses.closed = ses.kind == 'FREEHAND'
+    ses.target = bpy.data.objects.get(rec.target)
+    ses.mw = ses.sobj.matrix_world.copy()
+    ses.inv = ses.mw.inverted_safe()
+    ses.points = plan.surface_points(ses.sobj)
+    ses.orig = [p.copy() for p in ses.points]
+    ses.history = [[p.copy() for p in ses.points]]
+    ses.redo = []
+    ses.hover = ses.drag = ses.slide = None
+    ses.mouse = (0, 0)
+    ses.changed = False
+    ses._cursor_on = False
+    ses._handle = bpy.types.SpaceView3D.draw_handler_add(lambda: None, (), 'WINDOW', 'POST_PIXEL')
+    return ses
+
+
+def test_edit_cut_surface_modal():
+    print("== edit cut surface")
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    obj = make_cylinder("Edited")
+    rec = plan.add_record(bpy.context, obj, 'FREEHAND', [freehand_contact(obj)])
+
+    ses = edit_session(rec)
+    res = ses._modal(bpy.context, FakeEvent('LEFTMOUSE', 'PRESS', x=900))
+    check(res == {'PASS_THROUGH'}, "a click on the sidebar reaches the sidebar")
+
+    ses.end(bpy.context)
+
+    ses = edit_session(rec)
+    plan.remove_record(bpy.context, 0)
+    res = ses._modal(bpy.context, FakeEvent())
+    check(res == {'CANCELLED'} and ses._handle is None, "a cut deleted under the editor closes it cleanly")
+
+
 def test_cut_tools_leave_the_interface_alone():
     """An armed cut tool only takes the clicks that land on the 3D view itself.
 
@@ -1112,6 +1172,7 @@ if __name__ == "__main__":
     test_build_shows_why_a_cut_failed()
     test_cut_tools_leave_the_interface_alone()
     test_an_armed_tool_cleans_up_after_itself()
+    test_edit_cut_surface_modal()
     test_unregister()
     print(f"\n{len(FAILS)} failure(s)")
     for f in FAILS:
