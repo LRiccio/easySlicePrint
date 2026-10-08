@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format follows
   headers, other editors — clicks now go to the interface and the normal cursor comes back;
   the tool stays armed and picks up again back over the view. A stroke already under way
   carries on if the mouse leaves the view, and Esc cancels from anywhere.
+- **A cut tool can no longer be left hanging.** Since clicks off the view reach the interface,
+  a second tool could be started from the sidebar while one was armed, and Undo or Delete
+  could take the model away under it; the next click then failed and left the tool's drawing,
+  cursor and status text on screen. Starting another tool now replaces the armed one, a model
+  that is gone ends the tool with a message, and any unexpected error ends it cleanly.
 
 ## [0.3.7-alpha] - 2026-09-21
 

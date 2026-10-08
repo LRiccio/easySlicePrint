@@ -166,6 +166,12 @@ def failed_note(exc):
     return overlay.show_with_note(getattr(exc, "diagnosis", None), "Quick cut")
 
 
+# The cut tool that is armed right now. Blender lets a second one start while the first is
+# still running - a click on another tool in the sidebar - and both would then answer
+# clicks in the view; the newer one takes over and the older one bows out (`superseded`).
+_armed = None
+
+
 class CutToolBase(jobs.JobMixin):
     bl_options = {'REGISTER', 'UNDO'}
     kind = 'STRAIGHT'
@@ -205,6 +211,12 @@ class CutToolBase(jobs.JobMixin):
         self.mouse = (0, 0)
         self.reset_stroke()
         self._cursor_on = False
+        self.superseded = False
+        global _armed
+        if _armed is not None and _armed is not self:
+            _armed.superseded = True
+            _armed.drop_drawing()  # now: it only hears of it on an event the new tool passes on
+        _armed = self
         self._handle = bpy.types.SpaceView3D.draw_handler_add(self._draw_cb, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
         self.tool_cursor(over_view(self.area, self.region, event))
@@ -234,18 +246,46 @@ class CutToolBase(jobs.JobMixin):
         self.loop2d = []
         self.view_at_press = None
 
-    def end(self, context):
+    def end(self, context, quiet=False):
+        """Take down everything the tool put up.
+
+        `quiet` is for a tool another one has replaced: the cursor, status line and
+        header are the new tool's by now, so only this tool's own drawing goes.
+        """
+        global _armed
+        if _armed is self:
+            _armed = None
         if getattr(self, "_handle", None) is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
-        restore_cursor(getattr(self, "window", None))
-        self._cursor_on = False
-        context.workspace.status_text_set(None)
+        if not quiet:
+            restore_cursor(getattr(self, "window", None))
+            self._cursor_on = False
+            try:
+                context.workspace.status_text_set(None)
+            except Exception:
+                pass
+            try:
+                self.area.header_text_set(None)
+            except Exception:
+                pass
         try:
-            self.area.header_text_set(None)
+            self.area.tag_redraw()
         except Exception:
             pass
-        self.area.tag_redraw()
+
+    def drop_drawing(self):
+        if getattr(self, "_handle", None) is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            self._handle = None
+
+    def target_alive(self):
+        """False once the model is gone: deleted, or swapped out under the tool by an undo."""
+        try:
+            self.target.name  # noqa: B018 - touching it is the test
+        except ReferenceError:
+            return False
+        return True
 
     def coord(self, event):
         return (event.mouse_x - self.region.x, event.mouse_y - self.region.y)
@@ -262,6 +302,23 @@ class CutToolBase(jobs.JobMixin):
         return self.view_at_press is not None and self.view_key() != self.view_at_press
 
     def modal(self, context, event):
+        """Every way out of the tool goes through `end`, an unexpected error included.
+
+        A Python exception in `modal` makes Blender drop the operator on the spot, which
+        would leave its drawing, cursor and status text behind for good.
+        """
+        try:
+            return self._modal(context, event)
+        except Exception as exc:
+            self.job_stop(context)
+            self.end(context, quiet=getattr(self, "superseded", False))
+            self.report({'ERROR'}, f"Cut tool stopped: {exc}")
+            return {'CANCELLED'}
+
+    def _modal(self, context, event):
+        if self.superseded and not self.job_running():
+            self.end(context, quiet=True)
+            return {'CANCELLED'}
         if self.job_running():
             state, payload = self.job_step(context, event)
             if state == jobs.RUNNING:
@@ -270,6 +327,12 @@ class CutToolBase(jobs.JobMixin):
         if event.type in {'ESC'} and event.value == 'PRESS':
             self.end(context)
             self.report({'INFO'}, "Cut cancelled")
+            return {'CANCELLED'}
+        if not self.target_alive():
+            # the clicks off the view reach the interface, so an Undo or a Delete there
+            # can take the model away while the tool is still armed
+            self.end(context)
+            self.report({'WARNING'}, "The model was deleted or changed by Undo - cut cancelled")
             return {'CANCELLED'}
         inside = over_view(self.area, self.region, event)
         if not inside and not self.drawing:
@@ -404,7 +467,7 @@ class CutToolBase(jobs.JobMixin):
     def cancel(self, context):
         """Blender aborted the modal (file load, quit): drop the timer and the overlay."""
         self.job_stop(context)
-        self.end(context)
+        self.end(context, quiet=getattr(self, "superseded", False))
 
     def job_done(self, context, state, payload):
         settings = context.scene.esp

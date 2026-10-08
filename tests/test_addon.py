@@ -937,6 +937,104 @@ def test_quick_plane_section():
     check(max(cut_leg) < 8.0, f"and it came apart at the plane (its leg tops out at {max(cut_leg):.1f})")
 
 
+class FakeArea:
+    def __init__(self, regions):
+        self.regions = regions
+        self.header = "set"
+
+    def header_text_set(self, text):
+        self.header = text
+
+    def tag_redraw(self):
+        pass
+
+
+class FakeRegion:
+    def __init__(self, kind, x, y, w, h):
+        self.type, self.x, self.y, self.width, self.height = kind, x, y, w, h
+        self.data = None
+
+    def as_pointer(self):
+        return id(self)
+
+
+class FakeEvent:
+    def __init__(self, kind='MOUSEMOVE', value='NOTHING', x=500, y=400):
+        self.type, self.value, self.mouse_x, self.mouse_y = kind, value, x, y
+        self.alt = self.ctrl = self.shift = False
+
+
+def armed_tool(target):
+    """A cut tool as `invoke` leaves it, without a 3D viewport to run in."""
+    from easy_slice_print import ops_tools
+
+    class Tool(ops_tools.CutToolBase):
+        bl_idname = "esp.fake_tool"
+
+        def __init__(self):
+            self.reports = []
+
+        def report(self, kind, msg):
+            self.reports.append(msg)
+
+    tool = Tool()
+    view = FakeRegion('WINDOW', 0, 0, 1000, 800)
+    tool.area = FakeArea([view])
+    tool.window = None
+    tool.region = view
+    tool.rv3d = None
+    tool.target = target
+    tool.contacts = []
+    tool.contacts_needed = 1
+    tool.reset_stroke()
+    tool._cursor_on = False
+    tool.superseded = False
+    tool._handle = bpy.types.SpaceView3D.draw_handler_add(lambda: None, (), 'WINDOW', 'POST_PIXEL')
+    ops_tools._armed = tool
+    return tool
+
+
+def test_an_armed_tool_cleans_up_after_itself():
+    """Clicks off the view reach the interface, so the model can vanish under an armed tool.
+
+    Undo or Delete from the outliner, or a second tool started from the sidebar: the
+    tool has to notice and take its drawing, cursor and status text down with it,
+    instead of failing on the next click and leaving them on screen for good.
+    """
+    print("== an armed tool cleans up after itself")
+    reset_scene()
+    from easy_slice_print import ops_tools
+
+    obj = make_cylinder("Armed")
+    tool = armed_tool(obj)
+    check(tool._modal(bpy.context, FakeEvent()) == {'RUNNING_MODAL'}, "a live model keeps the tool armed")
+    bpy.data.objects.remove(obj)
+    res = tool._modal(bpy.context, FakeEvent())
+    check(res == {'CANCELLED'}, "a deleted model ends the tool")
+    check(tool._handle is None and tool.area.header is None, "and takes its drawing and header down")
+    check(ops_tools._armed is None, "nothing is left armed")
+
+    # a second tool takes over; the first goes quietly and leaves the new one's header alone
+    obj = make_cylinder("Armed2")
+    first = armed_tool(obj)
+    second = armed_tool(obj)
+    first.superseded = True  # what the second one's invoke does
+    second.area = first.area
+    res = first._modal(bpy.context, FakeEvent())
+    check(res == {'CANCELLED'} and first._handle is None, "the replaced tool bows out")
+    check(first.area.header == "set", "without clearing the header the new tool put up")
+    check(ops_tools._armed is second, "the new tool is the armed one")
+
+    # an error inside the tool still ends it cleanly
+    def boom(*_args):
+        raise RuntimeError("boom")
+
+    second.on_move = boom
+    res = second.modal(bpy.context, FakeEvent())
+    check(res == {'CANCELLED'} and second._handle is None, "an unexpected error ends the tool cleanly")
+    check(any("boom" in r for r in second.reports), "and says why")
+
+
 def test_cut_tools_leave_the_interface_alone():
     """An armed cut tool only takes the clicks that land on the 3D view itself.
 
@@ -998,6 +1096,7 @@ if __name__ == "__main__":
     test_plane_section_preview()
     test_build_shows_why_a_cut_failed()
     test_cut_tools_leave_the_interface_alone()
+    test_an_armed_tool_cleans_up_after_itself()
     test_unregister()
     print(f"\n{len(FAILS)} failure(s)")
     for f in FAILS:
