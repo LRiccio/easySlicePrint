@@ -72,6 +72,24 @@ def restore_cursor(window):
         pass
 
 
+# Parts of the 3D Viewport that are interface, not view: the sidebar (N), the toolbar (T),
+# the headers and the asset shelf. With Region Overlap on they are drawn over the view,
+# so the view's own rectangle alone does not say whether the mouse is on a button.
+UI_REGIONS = {'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER', 'ASSET_SHELF', 'ASSET_SHELF_HEADER', 'FOOTER'}
+
+
+def _inside(region, x, y):
+    return region.x <= x < region.x + region.width and region.y <= y < region.y + region.height
+
+
+def over_view(area, region, event):
+    """True when the mouse is on the 3D view itself, not on a panel, header or other editor."""
+    x, y = event.mouse_x, event.mouse_y
+    if region is None or not _inside(region, x, y):
+        return False
+    return not any(r.type in UI_REGIONS and r.width > 1 and r.height > 1 and _inside(r, x, y) for r in area.regions)
+
+
 def window_region(area):
     for r in area.regions:
         if r.type == 'WINDOW':
@@ -186,11 +204,26 @@ class CutToolBase(jobs.JobMixin):
         self.contacts = []
         self.mouse = (0, 0)
         self.reset_stroke()
+        self._cursor_on = False
         self._handle = bpy.types.SpaceView3D.draw_handler_add(self._draw_cb, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
-        set_cursor(self.window, self.cursor)
+        self.tool_cursor(over_view(self.area, self.region, event))
         self.update_status(context)
         return {'RUNNING_MODAL'}
+
+    def tool_cursor(self, on):
+        """The tool's cursor over the view only; the normal arrow over the interface.
+
+        The modal cursor is set for the whole window, so left alone the pencil would
+        follow the mouse onto the sidebar and make its buttons look unusable.
+        """
+        if on == getattr(self, "_cursor_on", False):
+            return
+        self._cursor_on = on
+        if on:
+            set_cursor(self.window, self.cursor)
+        else:
+            restore_cursor(self.window)
 
     def reset_stroke(self):
         self.stroke = []
@@ -206,6 +239,7 @@ class CutToolBase(jobs.JobMixin):
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
         restore_cursor(getattr(self, "window", None))
+        self._cursor_on = False
         context.workspace.status_text_set(None)
         try:
             self.area.header_text_set(None)
@@ -233,6 +267,17 @@ class CutToolBase(jobs.JobMixin):
             if state == jobs.RUNNING:
                 return {'RUNNING_MODAL'}
             return self.job_done(context, state, payload)
+        if event.type in {'ESC'} and event.value == 'PRESS':
+            self.end(context)
+            self.report({'INFO'}, "Cut cancelled")
+            return {'CANCELLED'}
+        inside = over_view(self.area, self.region, event)
+        if not inside and not self.drawing:
+            # On the sidebar, a header or another editor: the click belongs to the
+            # interface. The tool stays armed and picks up again back over the view.
+            self.tool_cursor(False)
+            return {'PASS_THROUGH'}
+        self.tool_cursor(True)
         self.mouse = self.coord(event)
         if event.type in NAV_EVENTS:
             return {'PASS_THROUGH'}

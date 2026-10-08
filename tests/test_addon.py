@@ -835,6 +835,44 @@ def test_quick_plane_section():
     check(max(cut_leg) < 8.0, f"and it came apart at the plane (its leg tops out at {max(cut_leg):.1f})")
 
 
+def test_cut_tools_leave_the_interface_alone():
+    """An armed cut tool only takes the clicks that land on the 3D view itself.
+
+    The modal used to eat every click in the window and set its pencil cursor
+    everywhere, so the sidebar could not be used until the cut was finished or
+    cancelled. The sidebar, toolbar and headers sit inside the view's own rectangle
+    when Region Overlap is on, so the test covers that layout.
+    """
+    print("== cut tools leave the interface alone")
+    from easy_slice_print.ops_tools import over_view
+
+    class R:
+        def __init__(self, kind, x, y, w, h):
+            self.type, self.x, self.y, self.width, self.height = kind, x, y, w, h
+
+    class E:
+        def __init__(self, x, y):
+            self.mouse_x, self.mouse_y = x, y
+
+    view = R('WINDOW', 100, 0, 1000, 800)
+
+    class Area:
+        regions = [
+            R('HEADER', 100, 776, 1000, 24),
+            R('TOOLS', 100, 0, 40, 776),
+            R('UI', 850, 0, 250, 776),
+            R('HUD', 0, 0, 1, 1),  # collapsed regions are left out
+            view,
+        ]
+
+    check(over_view(Area, view, E(500, 400)), "the middle of the view is the view")
+    check(not over_view(Area, view, E(900, 400)), "the sidebar drawn over the view is interface")
+    check(not over_view(Area, view, E(120, 400)), "so is the toolbar")
+    check(not over_view(Area, view, E(500, 790)), "and the header")
+    check(not over_view(Area, view, E(50, 400)), "another editor is not the view")
+    check(not over_view(Area, None, E(500, 400)), "no view region, nothing is the view")
+
+
 def test_unregister():
     print("== unregister")
     easy_slice_print.unregister()
@@ -856,6 +894,7 @@ if __name__ == "__main__":
     test_freehand_cut_lands_on_the_loop()
     test_plane_section_preview()
     test_build_shows_why_a_cut_failed()
+    test_cut_tools_leave_the_interface_alone()
     test_unregister()
     print(f"\n{len(FAILS)} failure(s)")
     for f in FAILS:

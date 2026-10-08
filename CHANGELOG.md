@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The sidebar works while a cut tool is armed.** Plane, Curve and Freehand cuts used to take
+  every click in the window and show their pencil or knife everywhere, so no button in the
+  sidebar answered until the cut was finished or cancelled. Off the 3D view — sidebar, toolbar,
+  headers, other editors — clicks now go to the interface and the normal cursor comes back;
+  the tool stays armed and picks up again back over the view. A stroke already under way
+  carries on if the mouse leaves the view, and Esc cancels from anywhere.
+
 ## [0.3.7-alpha] - 2026-09-21
 
 ### Changed
