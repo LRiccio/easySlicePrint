@@ -532,10 +532,10 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
         self.failed = None  # (record name, diagnosis) of the first cut that did not split its part
         if s.built:
             _remove_built_parts(context)
+        # a rebuild starts from the model as it was, whatever the previous build stashed;
         # after an approve the cuts can sit on different parts: each one is a source
+        plan.give_back_sources(context)
         sources = plan.plan_sources(context)
-        for src in sources:
-            plan.restore_from_backup(scene, src)
         plan.set_plan_hidden(context, False)
         col = plan.built_collection(scene, base.name)
         parts = list(sources)
@@ -608,7 +608,7 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
                 del o["esp_stem"]
         for src in sources:
             if src not in parts:  # it was cut: the model itself goes out of the way
-                plan.move_to_backup(scene, src)
+                plan.stash_built_source(scene, src)
         plan.set_plan_hidden(context, True)
         s.built = True
         s.built_collection = col.name
@@ -686,9 +686,9 @@ class ESP_OT_return_to_plan(bpy.types.Operator):
     def execute(self, context):
         s = context.scene.esp
         _remove_built_parts(context)
-        sources = plan.plan_sources(context)
-        for src in sources:
-            plan.restore_from_backup(context.scene, src)
+        # every source the build took away, not just those of the cuts still Ready: a cut
+        # unticked or deleted since the build would otherwise leave its part in the backup
+        sources = plan.give_back_sources(context)
         if sources:
             context.view_layer.objects.active = sources[0]
         plan.set_plan_hidden(context, False)
@@ -713,7 +713,7 @@ class ESP_OT_approve(bpy.types.Operator):
     def execute(self, context):
         s = context.scene.esp
         # only what this build actually consumed - a source it cut is in the backup
-        consumed = [o for o in plan.plan_sources(context) if o.get("esp_backup_home") is not None]
+        consumed = plan.build_stashed(context)
         col = bpy.data.collections.get(s.built_collection) if s.built_collection else None
         parts = [o for o in col.objects if o.type == 'MESH'] if col is not None else []
         # a built cut is done: its part exists, cutting it again would only split the part
@@ -730,6 +730,9 @@ class ESP_OT_approve(bpy.types.Operator):
         if not s.keep_original:
             for o in consumed:
                 mesh_utils.remove_object(o)
+        else:
+            for o in consumed:  # approved: it stays in the backup for good, no build's to give back
+                del o[plan.BUILD_STASH]
         s.built = False
         s.base_object = s.cuts[0].target if len(s.cuts) else ""
         s.built_collection = ""
@@ -760,7 +763,8 @@ class ESP_OT_clear_plan(bpy.types.Operator):
 
     def execute(self, context):
         s = context.scene.esp
-        stashed = [o for o in plan.plan_sources(context) if o.get("esp_backup_home") is not None]
+        stashed = plan.build_stashed(context)
+        stashed += [o for o in plan.plan_sources(context) if o.get("esp_backup_home") is not None and o not in stashed]
         plan.remove_all_records(context)
         if not s.built:
             for o in stashed:
@@ -770,6 +774,10 @@ class ESP_OT_clear_plan(bpy.types.Operator):
             # model they were cut from goes the way Approve sends it
             for o in stashed:
                 mesh_utils.remove_object(o)
+        else:
+            for o in stashed:
+                if plan.BUILD_STASH in o:
+                    del o[plan.BUILD_STASH]
         # Either way the plan has no source any more. A base left pointing at the model
         # in the backup rooted the next plan there: its build cut the hidden original
         # again instead of the part the cut was drawn on, and Back to Plan then deleted

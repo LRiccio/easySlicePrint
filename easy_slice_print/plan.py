@@ -157,6 +157,36 @@ def resolve_target(context):
     return None
 
 
+BUILD_STASH = "esp_stashed_by_build"
+
+
+def stash_built_source(scene, obj):
+    """A source a build has cut goes to the backup, marked as the build's to give back."""
+    move_to_backup(scene, obj)
+    obj[BUILD_STASH] = True
+
+
+def build_stashed(context):
+    """Every source the current build put in the backup - also those of cuts since unticked."""
+    col = bpy.data.collections.get(BACKUP_COLLECTION)
+    if col is None:
+        return []
+    return [o for o in col.objects if o.get(BUILD_STASH)]
+
+
+def give_back_sources(context):
+    """Back to how the plan was before the build: every source in view again. -> the sources."""
+    sources = plan_sources(context)
+    for o in build_stashed(context):
+        if o not in sources:
+            sources.append(o)
+    for o in sources:
+        restore_from_backup(context.scene, o)
+        if BUILD_STASH in o:
+            del o[BUILD_STASH]
+    return sources
+
+
 def plan_sources(context):
     """Every live model the plan cuts into, the base first.
 

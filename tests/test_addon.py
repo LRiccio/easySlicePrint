@@ -884,6 +884,32 @@ def test_a_cancelled_build_goes_back_to_the_plan():
     check(names == ["Bar_PART_001", "Bar_PART_002", "Bar_PART_003"], f"and makes exactly its own parts ({names})")
 
 
+def test_back_to_plan_gives_every_source_back():
+    """Back to Plan restores every part the build cut, also the source of a cut unticked since."""
+    print("== back to plan gives every source back")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    cube = make_slab("Cube", size=(20.0, 20.0, 60.0))
+    plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 0.0)])
+    r2 = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 15.0)])
+    r3 = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, -15.0)])
+    r2.enabled = r3.enabled = False
+    bpy.ops.esp.build()
+    bpy.ops.esp.approve()  # the two unbuilt cuts move onto the two halves
+    sources = sorted({r.target for r in s.cuts})
+    check(len(sources) == 2, f"the kept cuts sit on two parts ({sources})")
+    for r in s.cuts:
+        r.enabled = True
+    check(bpy.ops.esp.build() == {'FINISHED'}, "built again")
+    s.cuts[1].enabled = False  # unticked after the build (cuts[0] holds the base)
+    bpy.ops.esp.return_to_plan()
+    backup = bpy.data.collections[plan.BACKUP_COLLECTION].objects
+    for name in sources:
+        obj = bpy.data.objects.get(name)
+        check(obj is not None and name not in backup and not obj.hide_get(), f"{name} is back in view")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1333,6 +1359,7 @@ if __name__ == "__main__":
     test_pin_fits_the_depth_of_the_part()
     test_clear_plan_after_a_build_keeps_the_parts()
     test_a_cancelled_build_goes_back_to_the_plan()
+    test_back_to_plan_gives_every_source_back()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

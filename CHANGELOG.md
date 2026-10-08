@@ -97,6 +97,10 @@ All notable changes to this project are documented here. The format follows
   still marked half built, and the next Build added its own parts next to them in the same
   collection — duplicated parts that Approve and Export then kept. A Build that is cancelled,
   or stopped by an error, now removes everything it made and leaves the plan as it was.
+- **Back to Plan gives back every part the build cut.** It only restored the sources of the cuts
+  still ticked *Ready*: a cut unticked or deleted after a Build left its part hidden in the
+  backup, so that half of the model disappeared from the scene. The build now marks what it
+  stashes, and Back to Plan and a rebuild give all of it back.
 
 ## [0.3.7-alpha] - 2026-09-21
 
