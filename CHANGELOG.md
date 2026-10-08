@@ -61,6 +61,13 @@ All notable changes to this project are documented here. The format follows
   measured on the section less that margin. A freehand loop or a curve cut round a tube closes
   over the bore, which put the pin in the hollow; those faces are now measured against the model
   itself, so the pin sits in the wall. The multi-connector layout follows the same rule.
+- **A pin no longer comes out through the far side of a thin slice.** The pin reaches its
+  height into both parts, and that height came from the width of the cut face alone: a cut
+  4 mm below the top of a 40 mm block made an 18 mm pin that stuck out of the top, or — with
+  the pin on the other side — a socket that punched through it. The depth of the material is
+  now measured on both sides of the cut, and a preset pin is kept short enough to leave a wall
+  past its tip and its socket. A *Custom* height is left as typed, and the panel warns when the
+  part is too shallow for it.
 
 ## [0.3.7-alpha] - 2026-09-21
 

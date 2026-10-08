@@ -956,12 +956,61 @@ def preset_size_mm(context, preset, inscribed_bu):
     return width_mm, width_mm * connectors.HEIGHT_RATIO
 
 
-def contact_size_bu(context, src, inscribed_bu):
-    """(width, height) in BU for a settings source (record or scene defaults)."""
+def contact_size_bu(context, src, inscribed_bu, depth_bu=0.0):
+    """(width, height) in BU for a settings source (record or scene defaults).
+
+    A preset pin is also kept shorter than the material is deep (`depth_limit_bu`): it
+    reaches `height` into both parts, and on a cut close to an end of the model a pin
+    sized from the face alone came out through the far side. A Custom height is left as
+    typed; the panel warns when it is too long.
+    """
     if src.size_preset == 'CUSTOM':
         return src.pin_width_mm * mm(context), src.pin_height_mm * mm(context)
     w_mm, h_mm = preset_size_mm(context, src.size_preset, inscribed_bu)
-    return w_mm * mm(context), h_mm * mm(context)
+    w, h = w_mm * mm(context), h_mm * mm(context)
+    limit = depth_limit_bu(context, src, depth_bu)
+    if limit is not None and h > limit:
+        h = max(limit, DEPTH_MIN_PIN_MM * mm(context))
+    return w, h
+
+
+# Material left beyond the tip of a pin or the bottom of its socket (mm), and the shortest
+# pin a preset makes on a part too shallow for anything longer.
+DEPTH_WALL_MM = 0.8
+DEPTH_MIN_PIN_MM = 0.5
+
+
+def depth_limit_bu(context, src, depth_bu):
+    """Longest pin the material allows: the depth less the socket's tip extra and a wall."""
+    if depth_bu <= 0.0:
+        return None
+    u = mm(context)
+    tip = src.tip_extra_mm * u if src.asymmetric else 0.0
+    return depth_bu - tip - DEPTH_WALL_MM * u
+
+
+def contact_depth(context, target, center, normal):
+    """How deep the material runs from `center` on the cut, along +/-`normal`; the smaller.
+
+    0.0 when it cannot be measured (no target, or a ray that never leaves the model).
+    """
+    if target is None or target.type != 'MESH':
+        return 0.0
+    diag = mesh_utils.object_world_diagonal(target)
+    state = ensure_evaluable(target)
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+        depths = []
+        for d in (Vector(normal), -Vector(normal)):
+            hits = mesh_utils.object_ray_hits(
+                target, Vector(center), d, diag * 1e-5, depsgraph, max_dist=diag * 2.0, limit=1
+            )
+            if not hits:
+                return 0.0
+            depths.append(hits[0])
+        return min(depths)
+    finally:
+        restore_visibility(target, state)
 
 
 def _contact_attr(rec, base, i):
@@ -975,7 +1024,7 @@ def _set_contact_attr(rec, base, i, value):
 def auto_pin_matrix(context, rec, i, layout=None):
     center = Vector(_contact_attr(rec, "center", i))
     normal = Vector(_contact_attr(rec, "normal", i))
-    w, h = contact_size_bu(context, rec, _contact_attr(rec, "inscribed", i))
+    w, h = contact_size_bu(context, rec, _contact_attr(rec, "inscribed", i), _contact_attr(rec, "depth", i))
     k = layout.scale if layout is not None else 1.0
     return connectors.connector_matrix(center, cutting.protrude_direction(normal, rec.pin_side), w * k, h * k)
 
@@ -1132,9 +1181,9 @@ def apply_preset(context, rec):
     """Write the preset size of contact A into the width/height fields."""
     if rec.size_preset == 'CUSTOM':
         return
-    w_mm, h_mm = preset_size_mm(context, rec.size_preset, rec.inscribed_a)
-    rec.pin_width_mm = w_mm
-    rec.pin_height_mm = h_mm
+    w, h = contact_size_bu(context, rec, rec.inscribed_a, rec.depth_a)
+    rec.pin_width_mm = w / mm(context)
+    rec.pin_height_mm = h / mm(context)
 
 
 def printer_clearance_mm(context):
@@ -1236,6 +1285,7 @@ def add_record(context, target, cut_type, contacts):
             _set_contact_attr(rec, "center", i, center)
             _set_contact_attr(rec, "normal", i, normal)
             _set_contact_attr(rec, "inscribed", i, inscribed)
+            _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
         apply_preset(context, rec)
         apply_fit(context, rec)
         for i in range(len(contacts)):
@@ -1371,6 +1421,7 @@ def refresh_record_frames(context, rec):
         _set_contact_attr(rec, "center", i, center)
         _set_contact_attr(rec, "normal", i, normal)
         _set_contact_attr(rec, "inscribed", i, inscribed)
+        _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
         sobj["esp_mw"] = flat(sobj.matrix_world)
     on_record_settings_changed(context, rec)
 
@@ -1516,7 +1567,8 @@ def quick_spec(context, target, contacts):
                 target=target,
                 grown=data.grown,
             )
-            w, h = contact_size_bu(context, settings, inscribed)
+            depth = contact_depth(context, target, center, normal)
+            w, h = contact_size_bu(context, settings, inscribed, depth)
             w, h = w * layout.scale, h * layout.scale
             pm = connectors.connector_matrix(center, cutting.protrude_direction(normal, settings.pin_side), w, h)
             offsets = layout.offsets if layout.placed > 1 else None

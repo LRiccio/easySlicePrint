@@ -225,6 +225,9 @@ class ESP_CutRecord(bpy.types.PropertyGroup):
     normal_b: FloatVectorProperty(size=3, default=(0, 0, 1))
     inscribed_a: FloatProperty(default=1.0)
     inscribed_b: FloatProperty(default=1.0)
+    # how deep the material runs from the cut on its thinner side (BU); 0 = not measured
+    depth_a: FloatProperty(default=0.0)
+    depth_b: FloatProperty(default=0.0)
     anchor: FloatVectorProperty(
         size=3, description="World point on the model used to pick the part this cut applies to"
     )

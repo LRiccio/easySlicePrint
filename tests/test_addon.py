@@ -773,6 +773,53 @@ def test_connector_stays_in_the_material():
     check(inscribed < 4.5, f"sized to the wall, not to the bore ({inscribed:.2f})")
 
 
+def test_pin_fits_the_depth_of_the_part():
+    """A cut close to the end of the model gets a pin that stays inside it.
+
+    The pin reaches its height into both parts, and a height taken from the width of the
+    face alone came out through the far side of a thin slice - or, with the pin on the
+    other side, its socket punched a hole through it.
+    """
+    print("== the pin fits the depth of the part")
+    for side in ('A', 'B'):
+        sc = reset_scene()
+        s = sc.esp
+        s.mode = 'QUICK'
+        s.pin_side = side
+        cube = make_slab(f"Block{side}", size=(40.0, 40.0, 40.0))
+        a, b, _secs = __import__("easy_slice_print.ops_tools", fromlist=["quick_cut"]).quick_cut(
+            bpy.context, cube, [section_contact(cube, 16.0)]
+        )
+        top = a if mesh_utils.mesh_bounds(a.data)[1].z > mesh_utils.mesh_bounds(b.data)[1].z else b
+        bottom = b if top is a else a
+        mn, mx = mesh_utils.mesh_bounds(top.data)
+        check(mx.z < 20.01, f"side {side}: nothing sticks out of the top ({mx.z:.2f})")
+        roof = [v for v in top.data.vertices if abs(v.co.z - 20.0) < 1e-3]
+        check(len(roof) == 4, f"side {side}: the 4 mm slice keeps its top face whole ({len(roof)} vertices)")
+        check(loose_pieces(top.data) == 1 and loose_pieces(bottom.data) == 1, f"side {side}: both parts whole")
+
+    # a Custom height that is too long is left alone, and the panel says so
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    cube = make_slab("Custom", size=(40.0, 40.0, 40.0))
+    rec = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 16.0)])
+    check(rec.depth_a > 3.9 and rec.depth_a < 4.1, f"the record knows the slice is 4 mm deep ({rec.depth_a:.2f})")
+    check(rec.pin_height_mm < 3.2, f"the preset height was cut to fit ({rec.pin_height_mm:.2f} mm)")
+    rec.size_preset = 'CUSTOM'
+    rec.pin_height_mm = 10.0
+    labels = []
+
+    class Spy(DummyLayout):
+        def label(self, text="", **_kw):
+            labels.append(text)
+            return DummyLayout()
+
+    from easy_slice_print import ui
+
+    ui._depth_note(Spy(), bpy.context, rec)
+    check(any("breaks through" in t for t in labels), f"the panel warns ({labels})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1219,6 +1266,7 @@ if __name__ == "__main__":
     test_plan_workflow()
     test_several_connectors()
     test_connector_stays_in_the_material()
+    test_pin_fits_the_depth_of_the_part()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

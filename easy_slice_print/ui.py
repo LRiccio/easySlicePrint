@@ -132,6 +132,22 @@ def _layout_note(layout, rec):
             layout.label(text=f"{where}{placed} connectors, shrunk to {scale * 100:.0f}% to fit", icon='INFO')
 
 
+def _depth_note(layout, context, rec):
+    """Say so when the material is too shallow for the pin: shortened, or breaking through."""
+    u = plan.mm(context)
+    for i, depth in enumerate((rec.depth_a, rec.depth_b) if rec.two_contact else (rec.depth_a,)):
+        limit = plan.depth_limit_bu(context, rec, depth)
+        if limit is None:
+            continue
+        where = f"Contact {i + 1}: " if rec.two_contact else ""
+        if rec.size_preset == 'CUSTOM' and rec.pin_height_mm * u > limit:
+            layout.label(text=f"{where}the part is only {depth / u:.1f} mm deep here: pin breaks through", icon='ERROR')
+        elif rec.size_preset != 'CUSTOM':
+            _w, h = plan.contact_size_bu(context, rec, getattr(rec, f"inscribed_{'ab'[i]}"))
+            if h > limit:
+                layout.label(text=f"{where}height cut to {max(limit, 0.0) / u:.1f} mm by the part's depth", icon='INFO')
+
+
 class ESP_PT_connector(ESPPanel, bpy.types.Panel):
     bl_label = "Connector"
     bl_parent_id = "ESP_PT_main"
@@ -157,6 +173,8 @@ class ESP_PT_connector(ESPPanel, bpy.types.Panel):
         row.enabled = src.size_preset == 'CUSTOM'
         row.prop(src, "pin_width_mm")
         row.prop(src, "pin_height_mm")
+        if is_record:
+            _depth_note(col, context, src)
         row = col.row(align=True)
         row.prop(src, "pin_side", expand=True)
         if is_record:
