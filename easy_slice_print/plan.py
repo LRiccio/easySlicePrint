@@ -8,6 +8,7 @@ import math
 import bpy
 from bpy.app.handlers import persistent
 from mathutils import Matrix, Vector
+from mathutils.bvhtree import BVHTree
 
 from .core import connectors, cutting, mesh_utils, section, surfaces
 from .core.units import mm_to_bu
@@ -45,6 +46,7 @@ class ContactData:
         self.span = None  # (axis, lo, hi): the stroke, measured from plane_co
         self.cutter = None  # what the boolean subtracts, when it is not the patch itself
         self.is_cut_face = False  # the patch is the real printed cut face, edge to edge
+        self.grown = 0.0  # a plane section's outline sits this far past the model
         self.regions_skipped = 0  # regions the plane crosses that the stroke missed
 
 
@@ -208,7 +210,7 @@ def straight_section(context, target, plane_co, plane_no, span=None, reference=N
     verts, faces = res
     margin = max(section.section_extent(verts) * SECTION_MARGIN, mesh_utils.object_world_diagonal(target) * 0.002)
     grown_v, grown_f = section.grow_section(verts, faces, margin, plane_no)
-    return section.SectionResult(grown_v, grown_f, islands=res.islands, kept=res.kept, cutter=res.cutter)
+    return section.SectionResult(grown_v, grown_f, islands=res.islands, kept=res.kept, cutter=res.cutter, grown=margin)
 
 
 def fill_straight_contact(data, patch, span):
@@ -223,6 +225,7 @@ def fill_straight_contact(data, patch, span):
     data.cutter = patch.cutter
     data.span = span
     data.is_cut_face = True
+    data.grown = getattr(patch, "grown", 0.0)
     data.regions_skipped = patch.islands - patch.kept
 
 
@@ -375,6 +378,7 @@ def create_surface_object(context, name, data, target=None):
         obj["esp_ref"] = list(Vector(data.anchor) - origin)
         obj["esp_cut_face"] = data.is_cut_face
         obj["esp_skipped"] = data.regions_skipped
+        obj["esp_grown"] = data.grown
         if data.span is not None:
             obj["esp_span_u"] = list(data.span[0])
             obj["esp_span"] = [data.span[1], data.span[2]]
@@ -712,6 +716,7 @@ def rebuilt_section(obj, context, target):
     if patch is None:
         return None
     obj["esp_skipped"] = patch.islands - patch.kept
+    obj["esp_grown"] = getattr(patch, "grown", 0.0)
     inv = mw.inverted_safe()
     cutter = patch.cutter
     set_cutter(obj, [inv @ Vector(p) for p in cutter[0]] if cutter else None, cutter)
@@ -841,8 +846,69 @@ def unflat(vals):
 # ----------------------------------------------------------------------------
 # frames & sizes
 # ----------------------------------------------------------------------------
+_bvh_cache = {}
+
+
+def _model_bvh(target, depsgraph):
+    """BVH of the evaluated model, kept while the model is unchanged.
+
+    Every change to a connector setting lays the pins out again, and on a dense model
+    building the tree each time was most of the wait - a width slider lagged by
+    seconds. The key is the object, its mesh size and a few vertices: an edit to the
+    model makes a new one.
+    """
+    ev = target.evaluated_get(depsgraph)
+    me = ev.data
+    n = len(me.vertices)
+    if n == 0:
+        return None
+    probe = tuple(round(c, 6) for i in (0, n // 2, n - 1) for c in me.vertices[i].co)
+    key = (getattr(target, "session_uid", target.name), n, len(me.polygons), probe)
+    bvh = _bvh_cache.get(key)
+    if bvh is None:
+        try:
+            bvh = BVHTree.FromObject(ev, depsgraph)
+        except Exception:
+            return None
+        if len(_bvh_cache) >= 4:
+            _bvh_cache.clear()
+        _bvh_cache[key] = bvh
+    return bvh
+
+
+def material_clearance(context, target):
+    """A `clearance(p)` for the section helpers: distance from `p` to the model's surface.
+
+    Negative when `p` is not inside the material. The target has to be evaluable while
+    it is used (see `ensure_evaluable`). None when there is no mesh to measure against.
+    One BVH of the evaluated model is built up front: the section helpers ask for
+    thousands of points, and a dense model would otherwise rebuild it for every one.
+    """
+    if target is None or target.type != 'MESH':
+        return None
+    depsgraph = context.evaluated_depsgraph_get()
+    bvh = _model_bvh(target, depsgraph)
+    if bvh is None:
+        return None
+    mw = target.matrix_world.copy()
+    inv = mw.inverted_safe()
+    nmat = inv.to_3x3().transposed()
+
+    def clearance(p):
+        p = Vector(p)
+        loc, nor, _i, _d = bvh.find_nearest(inv @ p)
+        if loc is None:
+            return 1e30
+        loc_w = mw @ loc
+        if (p - loc_w).dot(nmat @ nor) > 0.0:
+            return -1.0
+        return (p - loc_w).length
+
+    return clearance
+
+
 def contact_frame(
-    context, target, verts, faces, hit=None, through=None, center_hint=None, is_cut_face=False, shrink=0.0
+    context, target, verts, faces, hit=None, through=None, center_hint=None, is_cut_face=False, grown=0.0
 ):
     """-> (centre, normal, inscribed diameter) for the connector on this cut surface.
 
@@ -852,15 +918,26 @@ def contact_frame(
     face (a fallback rectangle, an untrimmed ribbon) says nothing about where the
     material is, and the ray based estimate is still the best available.
 
-    `shrink` comes off the diameter, for a face that is known to reach a little past
-    the material. No surface needs it today: a freehand membrane ends on the loop
-    drawn on the surface, and its clearance lives in a separate cutter.
+    A plane section's outline is pushed `grown` past the model so the boolean clears
+    it; the circle is measured against the section less that much, or a pin sized from
+    it breaks out of a thin wall. A ribbon or a freehand membrane can span a hollow - a
+    loop round a tube closes over its bore - so those are measured against the model
+    itself as well (`material_clearance`), which keeps the pin in the wall.
     """
     if is_cut_face:
         normal = surfaces.patch_normal(verts, faces)
-        found = section.inscribed_circle(verts, faces, normal)
+        clearance = None
+        state = None
+        if grown <= 0.0 and target is not None:
+            state = ensure_evaluable(target)
+            clearance = material_clearance(context, target)
+        try:
+            found = section.inscribed_circle(verts, faces, normal, clearance=clearance)
+        finally:
+            if state is not None:
+                restore_visibility(target, state)
         if found is not None:
-            return found[0], normal, max(found[1] - shrink, found[1] * 0.2)
+            return found[0], normal, max(found[1] - 2.0 * grown, found[1] * 0.2)
     bvh = mesh_utils.bvh_from_pydata(verts, faces)
     diag = mesh_utils.object_world_diagonal(target)
     state = ensure_evaluable(target)
@@ -944,7 +1021,7 @@ def _line_layout(center, x_axis, inscribed, count, r, rim):
     return [center + x_axis * (-half + step * j) for j in range(count)]
 
 
-def compute_layout(context, src, verts, faces, is_cut_face, center, normal, inscribed):
+def compute_layout(context, src, verts, faces, is_cut_face, center, normal, inscribed, target=None, grown=0.0):
     """PinLayout for `src.pin_count` connectors on one cut surface (world space input).
 
     The pins are spread over the face as far apart as the material allows (see
@@ -971,6 +1048,8 @@ def compute_layout(context, src, verts, faces, is_cut_face, center, normal, insc
         src.pin_side,
         scales,
         bool(is_cut_face),
+        round(grown, 6),
+        target.name if target is not None else "",
         len(verts),
         len(faces),
         tuple(round(c, 6) for c in (verts[0] if verts else (0.0, 0.0, 0.0))),
@@ -980,28 +1059,51 @@ def compute_layout(context, src, verts, faces, is_cut_face, center, normal, insc
     if hit is not None:
         return PinLayout(list(hit[0]), hit[1], asked)
     found = None
-    for count in range(asked, 1, -1):
-        for k in scales:
-            r = w * k * 0.5
-            rim = max(r * LAYOUT_RIM_RATIO, LAYOUT_RIM_MIN_MM * u)
-            pts = []
-            if is_cut_face:
-                pts = section.spread_points(verts, faces, normal, count, r + rim, 2.0 * r + rim)
-            if not pts:
-                pts = _line_layout(center, x_axis, inscribed, count, r, rim)
-            if pts:
-                size = w * k
-                offsets = [((p - center).dot(x_axis) / size, (p - center).dot(y_axis) / size) for p in pts]
-                found = (offsets, k)
-                break
-        if found is not None:
-            break
+    # a plane section is measured less its grown outline, anything else against the model
+    state = ensure_evaluable(target) if target is not None and is_cut_face and grown <= 0.0 else None
+    clearance = material_clearance(context, target) if state is not None else None
+    try:
+        found = _search_layout(
+            asked,
+            scales,
+            w,
+            u,
+            is_cut_face,
+            (verts, faces, normal, grown),
+            (center, x_axis, y_axis),
+            inscribed,
+            clearance,
+        )
+    finally:
+        if state is not None:
+            restore_visibility(target, state)
     if found is None:
         found = ([(0.0, 0.0)], 1.0)
     if len(_layout_cache) > 64:
         _layout_cache.clear()
     _layout_cache[key] = found
     return PinLayout(list(found[0]), found[1], asked)
+
+
+def _search_layout(asked, scales, w, u, is_cut_face, patch, frame, inscribed, clearance):
+    """Most pins first, biggest first: the first layout that fits. -> (offsets, scale) or None."""
+    verts, faces, normal, grown = patch
+    center, x_axis, y_axis = frame
+    for count in range(asked, 1, -1):
+        for k in scales:
+            r = w * k * 0.5
+            rim = max(r * LAYOUT_RIM_RATIO, LAYOUT_RIM_MIN_MM * u)
+            pts = []
+            if is_cut_face:
+                pts = section.spread_points(
+                    verts, faces, normal, count, r + rim + grown, 2.0 * r + rim, clearance=clearance
+                )
+            if not pts:
+                pts = _line_layout(center, x_axis, inscribed, count, r, rim)
+            if pts:
+                size = w * k
+                return [((p - center).dot(x_axis) / size, (p - center).dot(y_axis) / size) for p in pts], k
+    return None
 
 
 def record_layout(context, rec, i):
@@ -1021,6 +1123,8 @@ def record_layout(context, rec, i):
         _contact_attr(rec, "center", i),
         _contact_attr(rec, "normal", i),
         _contact_attr(rec, "inscribed", i),
+        target=bpy.data.objects.get(rec.target) or bpy.data.objects.get(context.scene.esp.base_object),
+        grown=float(sobj.get("esp_grown", 0.0)),
     )
 
 
@@ -1127,6 +1231,7 @@ def add_record(context, target, cut_type, contacts):
                 data.through,
                 data.center_hint,
                 data.is_cut_face,
+                data.grown,
             )
             _set_contact_attr(rec, "center", i, center)
             _set_contact_attr(rec, "normal", i, normal)
@@ -1259,6 +1364,7 @@ def refresh_record_frames(context, rec):
                 through,
                 hint,
                 bool(sobj.get("esp_cut_face", False)),
+                float(sobj.get("esp_grown", 0.0)),
             )
         except Exception:
             continue
@@ -1396,9 +1502,19 @@ def quick_spec(context, target, contacts):
                 data.through,
                 data.center_hint,
                 data.is_cut_face,
+                data.grown,
             )
             layout = compute_layout(
-                context, settings, data.verts, data.faces, data.is_cut_face, center, normal, inscribed
+                context,
+                settings,
+                data.verts,
+                data.faces,
+                data.is_cut_face,
+                center,
+                normal,
+                inscribed,
+                target=target,
+                grown=data.grown,
             )
             w, h = contact_size_bu(context, settings, inscribed)
             w, h = w * layout.scale, h * layout.scale

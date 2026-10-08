@@ -55,6 +55,12 @@ All notable changes to this project are documented here. The format follows
   the boolean result was taken for a failure and replaced by an empty mesh: one half of the
   model vanished without a word, the other got a floating pin. The cut now stops with a message
   naming the connector, and a boolean whose cutter misses leaves the mesh as it was.
+- **Connectors stay inside thin walls and out of hollows.** A plane section is grown a little
+  past the model so the boolean clears it, and the pin was measured on that grown outline: a
+  4 mm wall measured 8 mm, and a Large pin or its socket broke through the wall. The pin is now
+  measured on the section less that margin. A freehand loop or a curve cut round a tube closes
+  over the bore, which put the pin in the hollow; those faces are now measured against the model
+  itself, so the pin sits in the wall. The multi-connector layout follows the same rule.
 
 ## [0.3.7-alpha] - 2026-09-21
 

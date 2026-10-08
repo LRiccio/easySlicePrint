@@ -726,6 +726,53 @@ def test_several_connectors():
     check(loose_pieces(a.data) == 1 and loose_pieces(b.data) == 1, "both quick parts are one piece")
 
 
+def make_tube(name="Tube", outer=15.0, inner=11.0, height=60.0, segments=64):
+    def cylinder(radius, depth, mesh_name):
+        bm = bmesh.new()
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=segments, radius1=radius, radius2=radius, depth=depth)
+        me = bpy.data.meshes.new(mesh_name)
+        bm.to_mesh(me)
+        bm.free()
+        return me
+
+    solid = cylinder(outer, height, name + "_solid")
+    bore = cylinder(inner, height * 1.2, name + "_bore")
+    me = mesh_utils.boolean_mesh(bpy.context, solid, bore, 'DIFFERENCE', 'EXACT')
+    mesh_utils.remove_mesh(solid)
+    mesh_utils.remove_mesh(bore)
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    return obj
+
+
+def test_connector_stays_in_the_material():
+    """The pin is measured against the material, not against a surface that overstates it.
+
+    A plane section is grown past the model so the boolean clears it: measured on that,
+    a 4 mm wall looked 8 mm thick and a Large pin broke out of it. A freehand loop round
+    a tube closes over the bore, so the pin went into the hollow.
+    """
+    print("== the connector stays in the material")
+    reset_scene()
+    tube = make_tube("ThinTube", outer=100.0, inner=96.0, height=80.0, segments=256)
+    d = section_contact(tube, 0.0)
+    _centre, _normal, inscribed = plan.contact_frame(
+        bpy.context, tube, d.verts, d.faces, None, None, d.center_hint, True, d.grown
+    )
+    check(abs(inscribed - 4.0) < 0.3, f"a 4 mm wall measures 4 mm ({inscribed:.2f})")
+
+    reset_scene()
+    tube = make_tube("Bore", outer=15.0, inner=11.0, height=60.0)
+    d = freehand_contact(tube, height=0.0, tilt=0.0)
+    centre, _normal, inscribed = plan.contact_frame(
+        bpy.context, tube, d.verts, d.faces, None, None, d.center_hint, True, d.grown
+    )
+    r = centre.xy.length
+    check(11.0 < r < 15.0, f"a loop round a tube puts the pin in the wall (r {r:.2f})")
+    check(inscribed < 4.5, f"sized to the wall, not to the bore ({inscribed:.2f})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1171,6 +1218,7 @@ if __name__ == "__main__":
     test_register()
     test_plan_workflow()
     test_several_connectors()
+    test_connector_stays_in_the_material()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

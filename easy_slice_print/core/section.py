@@ -129,13 +129,17 @@ class SectionResult(tuple):
     shape to subtract with, because its rim runs along the model's surface for its
     whole length and an exact boolean asked to resolve that many near tangent
     intersections comes back with slivers - or with a part that never came apart.
+
+    `grown` is how far the outline was pushed past the model for that same reason; the
+    connector is measured against the section less that much.
     """
 
-    def __new__(cls, verts, faces, islands=1, kept=1, cutter=None):
+    def __new__(cls, verts, faces, islands=1, kept=1, cutter=None, grown=0.0):
         self = super().__new__(cls, (verts, faces))
         self.islands = islands
         self.kept = kept
         self.cutter = cutter
+        self.grown = grown  # how far the outline was pushed past the model (`grow_section`)
         return self
 
     @property
@@ -466,7 +470,7 @@ def _face_samples(verts, faces, rows=3):
     return out
 
 
-def inscribed_circle(verts, faces, normal, resolution=40, refinements=4):
+def inscribed_circle(verts, faces, normal, resolution=40, refinements=4, clearance=None):
     """Largest circle that fits inside a flat patch -> (centre, diameter).
 
     This is what sizes and places a connector once the cut surface is the model's real
@@ -482,6 +486,13 @@ def inscribed_circle(verts, faces, normal, resolution=40, refinements=4):
     on a plane lands nowhere near it. A flat section then gets a coarse grid over its
     own extent and a few rounds of refinement, which is what finds the middle of a
     large empty area that no single face centroid sits in.
+
+    `clearance(p)`, when given, is how far `p` is from the model's own surface, or a
+    negative number when `p` is not in the material at all. The patch outline alone
+    overstates the room a pin has: a plane section is grown a little past the model so
+    the boolean clears it, and a freehand membrane spans the hollow of a tube as if it
+    were solid. Taking the smaller of the two keeps the pin, and the rim round its
+    socket, inside real material.
     """
     if not verts or not faces:
         return None
@@ -497,46 +508,67 @@ def inscribed_circle(verts, faces, normal, resolution=40, refinements=4):
     vs = [(Vector(p) - origin).dot(v) for p in verts]
     inside_eps = max(extent * 1e-4, 1e-7)
 
-    def score(p):
+    def room(p):
+        """Distance from `p` to the outline of the patch, -1 off the patch."""
         loc, _nor, _i, _d = patch.find_nearest(p)
         if loc is None or (loc - p).length > inside_eps:
             return -1.0
         loc, _nor, _i, _d = wall.find_nearest(p)
         return -1.0 if loc is None else (loc - p).length
 
-    best, best_d = None, -1.0
-    for p in _face_samples(verts, faces):  # always on the patch, whatever the grid does
-        d = score(p)
-        if d > best_d:
-            best, best_d = p, d
+    def pick(points, best, best_d):
+        """The best of `points`, the model asked as little as possible.
+
+        The room the outline leaves is an upper bound on the true room, so the samples
+        are tried widest first and the search stops at the first one whose bound can
+        no longer beat the best found: on a dense model asking for the surface is the
+        expensive part, and most samples never need it.
+        """
+        scored = sorted(((room(p), p) for p in points), key=lambda t: t[0], reverse=True)
+        for d, p in scored:
+            if d <= best_d:
+                break
+            if clearance is not None:
+                c = clearance(p)
+                if c < 0.0:
+                    continue
+                d = min(d, c)
+            if d > best_d:
+                best, best_d = p, d
+        return best, best_d
+
+    def grid(lo_u, hi_u, lo_v, hi_v, res):
+        step_u = (hi_u - lo_u) / max(1, res)
+        step_v = (hi_v - lo_v) / max(1, res)
+        pts = [
+            origin + u * (lo_u + step_u * i) + v * (lo_v + step_v * j) for i in range(res + 1) for j in range(res + 1)
+        ]
+        return pts, step_u, step_v
+
     lo_u, hi_u, lo_v, hi_v = min(us), max(us), min(vs), max(vs)
-    for _ in range(refinements + 1):
-        step_u = (hi_u - lo_u) / max(1, resolution)
-        step_v = (hi_v - lo_v) / max(1, resolution)
-        for i in range(resolution + 1):
-            for j in range(resolution + 1):
-                p = origin + u * (lo_u + step_u * i) + v * (lo_v + step_v * j)
-                d = score(p)
-                if d > best_d:
-                    best, best_d = p, d
+    pts, step_u, step_v = grid(lo_u, hi_u, lo_v, hi_v, resolution)
+    # face samples are always on the patch, whatever the grid does
+    best, best_d = pick(_face_samples(verts, faces) + pts, None, -1.0)
+    for _ in range(refinements):
         if best is None:
             return None
         # zoom in on the best sample; two cells wide, so the true optimum stays inside
         cu, cv = (best - origin).dot(u), (best - origin).dot(v)
-        lo_u, hi_u = cu - step_u, cu + step_u
-        lo_v, hi_v = cv - step_v, cv + step_v
         resolution = max(6, resolution // 3)
+        pts, step_u, step_v = grid(cu - step_u, cu + step_u, cv - step_v, cv + step_v, resolution)
+        best, best_d = pick(pts, best, best_d)
     if best is None or best_d <= 0.0:
         return None
     return best, best_d * 2.0
 
 
-def spread_points(verts, faces, normal, count, clearance, separation, resolution=48):
+def spread_points(verts, faces, normal, count, margin, separation, resolution=48, clearance=None):
     """`count` points on a flat patch, as far apart as the material allows.
 
     Used to lay out several connectors on one cut face. Every point keeps at least
-    `clearance` from the outline of the face (the pin's radius plus a rim of material
-    around its socket), and the points are spread to make the smallest distance
+    `margin` from the outline of the face (the pin's radius plus a rim of material
+    around its socket) - and from the model's surface, through `clearance` as in
+    `inscribed_circle` - and the points are spread to make the smallest distance
     between any two of them as large as possible - pins far apart resist twisting
     best. Returns [] when `count` points cannot be placed `separation` apart; the
     caller then tries smaller pins or fewer of them.
@@ -553,7 +585,8 @@ def spread_points(verts, faces, normal, count, clearance, separation, resolution
     origin = surfaces.patch_center(verts)
     inside_eps = max(extent * 1e-4, 1e-7)
 
-    def score(p):
+    def room(p):
+        """Distance from `p` to the outline of the patch, -1 off the patch."""
         loc, _nor, _i, _d = patch.find_nearest(p)
         if loc is None or (loc - p).length > inside_eps:
             return -1.0
@@ -571,9 +604,39 @@ def spread_points(verts, faces, normal, count, clearance, separation, resolution
             )
     feasible = []
     for p in samples:
-        d = score(p)
-        if d >= clearance:
+        d = room(p)
+        if d >= margin:
             feasible.append((Vector(p), d))
+
+    # The model (`clearance`) is asked lazily: a layout is chosen on the outline alone,
+    # and only its points are checked; one that turns out to be too close to the surface
+    # - or outside the material - is struck off and the layout chosen again. On a solid
+    # part nothing is struck off and the model is asked a handful of times, not once per
+    # sample, which on a dense model was most of the time a settings change took.
+    verdict = {}
+
+    def fits(p):
+        key = tuple(p)
+        if key not in verdict:
+            verdict[key] = clearance(p) >= margin
+        return verdict[key]
+
+    if clearance is None:
+        return _spread(feasible, count, separation, extent)
+    for _attempt in range(40):
+        pts = _spread(feasible, count, separation, extent)
+        misfits = [q for q in pts if not fits(q)]
+        if not misfits:
+            return pts
+        struck = {tuple(q) for q in misfits}
+        feasible = [t for t in feasible if tuple(t[0]) not in struck]
+    # the outline misleads badly here (a hollow, a thin wall): ask about every sample
+    feasible = [t for t in feasible if fits(t[0])]
+    return _spread(feasible, count, separation, extent)
+
+
+def _spread(feasible, count, separation, extent):
+    """The max-min spread of `count` points out of `feasible` (point, room) samples."""
     if not feasible:
         return []
     if count == 1:
