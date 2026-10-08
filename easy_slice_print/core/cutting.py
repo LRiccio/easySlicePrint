@@ -257,6 +257,17 @@ def split_mesh(context, mesh, spec):
     return drain(split_mesh_steps(context, mesh, spec))
 
 
+def connector_missed_message(n, total, missed):
+    """A connector whose pin or socket left its part untouched does not cross the cut."""
+    which = f"Connector {n} of {total}" if total > 1 else "The connector"
+    what = " and ".join(missed)
+    return (
+        f"{which} does not cross the cut: its {what} misses the part. It was probably moved off the "
+        "cut face - move it back, or use Reset on the connector. (With the Manifold solver chosen in "
+        "the preferences, a mesh that is not closed is refused the same way: try Exact.)"
+    )
+
+
 def apply_connectors_steps(context, mesh_a, mesh_b, spec):
     total = sum(1 for c in spec.contacts if c.add_pin and c.pin_matrix is not None)
     n = 0
@@ -284,6 +295,15 @@ def apply_connectors_steps(context, mesh_a, mesh_b, spec):
             half = mesh_utils.boolean_mesh(context, pin_target, pin, 'UNION', spec.solver)
             yield f"carving socket {n}/{total}" if total > 1 else "carving the socket"
             carved = mesh_utils.boolean_mesh(context, socket_target, socket, 'DIFFERENCE', spec.solver)
+            missed = [
+                what
+                for what, out, src in (("pin", half, pin_target), ("socket", carved, socket_target))
+                if mesh_utils.same_shape(out, src)
+            ]
+            if missed:
+                for m in (pin, socket, carved):
+                    mesh_utils.remove_mesh(m)
+                raise CutError(connector_missed_message(n, total, missed))
             new_a, new_b = (half, carved) if spec.pin_side == 'A' else (carved, half)
             half = None
             for m in (pin, socket, mesh_a, mesh_b):

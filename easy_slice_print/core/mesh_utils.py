@@ -128,11 +128,18 @@ def boolean_mesh(context, base_mesh, cutter_mesh, operation, solver='AUTO'):
     operation: 'DIFFERENCE' | 'UNION' | 'INTERSECT'
     With solver AUTO the manifold solver is tried first and EXACT is used as a
     fallback when the result comes back empty.
+
+    A result identical to the input is ambiguous: the solver refused to run (Manifold
+    on a mesh that is not), or the cutter does not touch the mesh at all. The next
+    solver settles it; when every solver agrees nothing changed, nothing did, and the
+    input comes back as it was. It used to come back as an empty mesh, which threw a
+    whole part away whenever a connector had been moved off the cut face.
     """
     scene = context.scene
     base = new_temp_object(scene, base_mesh, "_esp_bool_base")
     cutter = new_temp_object(scene, cutter_mesh, "_esp_bool_cutter")
     result = None
+    untouched = None
     try:
         chain = [resolve_solver(solver)]
         if solver == 'AUTO' and chain[0] != 'EXACT':
@@ -150,13 +157,23 @@ def boolean_mesh(context, base_mesh, cutter_mesh, operation, solver='AUTO'):
                 result = me
                 break
             # empty result, or the solver refused to run (mesh returned untouched): try the next solver
-            remove_mesh(me)
+            if unchanged and len(me.polygons) > 0 and untouched is None:
+                untouched = me
+            else:
+                remove_mesh(me)
         if result is None:
-            result = bpy.data.meshes.new(base_mesh.name + "_bool")
+            result = untouched if untouched is not None else bpy.data.meshes.new(base_mesh.name + "_bool")
+            untouched = None
     finally:
+        remove_mesh(untouched)
         remove_object(base, remove_data=False)
         remove_object(cutter, remove_data=False)
     return result
+
+
+def same_shape(a, b):
+    """Two meshes with the same vertex and face counts - what an untouched boolean returns."""
+    return len(a.vertices) == len(b.vertices) and len(a.polygons) == len(b.polygons)
 
 
 # ----------------------------------------------------------------------------

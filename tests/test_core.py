@@ -1344,6 +1344,35 @@ def test_mirrored_object():
         check(loose_pieces(part.data) == 1, f"{part.name} is one piece, the pin fused to it")
 
 
+def test_a_connector_off_the_cut_face():
+    """A pin moved off the cut face is an error, not a part thrown away."""
+    print("== a connector moved off the cut face")
+    reset_scene()
+    obj = make_cylinder("OffFace")
+    verts, faces = surfaces.plane_patch(Vector((0, 0, 0)), Vector((0, 0, 1)), Vector((1, 0, 0)), 60)
+    pm = Matrix.Translation((40.0, 0.0, 0.0)) @ connectors.connector_matrix(
+        Vector((0, 0, 0)), Vector((0, 0, -1)), 6.0, 7.0
+    )
+    spec = cutting.CutSpec(
+        contacts=[cutting.ContactSpec(verts, faces, True, pm, 'CYLINDER', None)], gap=0.2, clearance=0.1
+    )
+    meshes = len(bpy.data.meshes)
+    try:
+        cutting.perform_cut(bpy.context, obj, spec, ("A", "B"), out_collection("off_out"))
+        check(False, "the cut should have failed")
+    except cutting.CutError as e:
+        check("does not cross the cut" in str(e), f"says the connector misses ({e})")
+    check(len(bpy.data.meshes) == meshes, f"and leaves no meshes behind ({len(bpy.data.meshes) - meshes})")
+
+    # an untouched boolean gives the mesh back, it does not empty it
+    a = mesh_utils.bmesh_to_mesh(surfaces.slab_from_patch(verts, faces, 2.0), "slab_a")
+    far = mesh_utils.bmesh_to_mesh(
+        surfaces.slab_from_patch([v + Vector((500, 0, 0)) for v in verts], faces, 2.0), "slab_far"
+    )
+    out = mesh_utils.boolean_mesh(bpy.context, a, far, 'DIFFERENCE')
+    check(len(out.polygons) == len(a.polygons), "a cutter that misses leaves the mesh as it was")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1368,6 +1397,7 @@ if __name__ == "__main__":
     test_ribbon_follows_a_silhouette()
     test_several_connectors_on_one_cut()
     test_mirrored_object()
+    test_a_connector_off_the_cut_face()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

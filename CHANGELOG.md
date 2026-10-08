@@ -50,6 +50,11 @@ All notable changes to this project are documented here. The format follows
 - **Mirrored models are cut right side out.** A model with a negative scale (mirrored with
   Ctrl+M or scaled by -1) came out inside out: both parts had their normals pointing in, and
   the pin was not fused to its part.
+- **A connector moved off the cut face no longer throws a part away.** When its socket missed
+  the part entirely — the pin dragged sideways in Plan mode, or placed in the hollow of a tube —
+  the boolean result was taken for a failure and replaced by an empty mesh: one half of the
+  model vanished without a word, the other got a floating pin. The cut now stops with a message
+  naming the connector, and a boolean whose cutter misses leaves the mesh as it was.
 
 ## [0.3.7-alpha] - 2026-09-21
 
