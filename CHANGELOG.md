@@ -88,6 +88,11 @@ All notable changes to this project are documented here. The format follows
 - **A cancelled cut leaves nothing behind.** Pressing Esc while a connector was being carved,
   or a boolean failing part way, left the pin, the socket and half-built parts in the file as
   orphan meshes.
+- **Clear Plan after a Build keeps what it promises.** The plan kept pointing at the original
+  model, hidden in the backup: a new cut drawn on one of the kept parts then cut the hidden
+  original again, and Back to Plan deleted the parts Clear Plan had kept. Clearing a built plan
+  now works like approving it — the parts stay, the original follows *Keep Original* — and the
+  next cut starts a new plan on the part it is drawn on.
 
 ## [0.3.7-alpha] - 2026-09-21
 

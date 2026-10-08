@@ -739,7 +739,16 @@ class ESP_OT_clear_plan(bpy.types.Operator):
         if not s.built:
             for o in stashed:
                 plan.restore_from_backup(context.scene, o)
-            s.base_object = ""
+        elif not s.keep_original:
+            # the built parts are kept, so this is an Approve of the whole plan: the
+            # model they were cut from goes the way Approve sends it
+            for o in stashed:
+                mesh_utils.remove_object(o)
+        # Either way the plan has no source any more. A base left pointing at the model
+        # in the backup rooted the next plan there: its build cut the hidden original
+        # again instead of the part the cut was drawn on, and Back to Plan then deleted
+        # the parts this button had promised to keep.
+        s.base_object = ""
         s.built = False
         s.built_collection = ""
         overlay.clear()

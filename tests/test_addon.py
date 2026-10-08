@@ -824,6 +824,33 @@ def test_pin_fits_the_depth_of_the_part():
     check(any("breaks through" in t for t in labels), f"the panel warns ({labels})")
 
 
+def test_clear_plan_after_a_build_keeps_the_parts():
+    """Clear Plan on a built plan keeps its parts, and the next plan cuts those parts."""
+    print("== clear plan after a build")
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    cube = make_slab("Cube", size=(20.0, 20.0, 60.0))
+    plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 0.0)])
+    check(bpy.ops.esp.build() == {'FINISHED'}, "built")
+    bpy.ops.esp.clear_plan('EXEC_DEFAULT')
+    kept = sorted(o.name for o in bpy.data.objects if o.name.startswith("Cube_PART"))
+    check(kept == ["Cube_PART_001", "Cube_PART_002"], f"the parts are kept ({kept})")
+    check(sc.esp.base_object == "", "the plan no longer points at the original")
+    upper = max((bpy.data.objects[n] for n in kept), key=lambda o: mesh_utils.mesh_bounds(o.data)[1].z)
+    plan.add_record(bpy.context, upper, 'STRAIGHT', [section_contact(upper, 15.0)])
+    check(sc.esp.base_object == upper.name, f"a new cut on a part makes that part the source ({sc.esp.base_object})")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the new plan builds")
+    check(
+        cube.hide_get() and cube.name in bpy.data.collections[plan.BACKUP_COLLECTION].objects, "the original stays put"
+    )
+    col = bpy.data.collections[sc.esp.built_collection]
+    tops = sorted(round(mesh_utils.mesh_bounds(o.data)[1].z, 1) for o in col.objects)
+    check(len(col.objects) == 2 and tops[-1] == 30.0 and tops[0] < 16.0, f"the part was cut, not the model ({tops})")
+    bpy.ops.esp.return_to_plan()
+    lower = [n for n in kept if bpy.data.objects.get(n) is not None]
+    check(len(lower) == 2, f"Back to Plan leaves the earlier parts alone ({lower})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1271,6 +1298,7 @@ if __name__ == "__main__":
     test_several_connectors()
     test_connector_stays_in_the_material()
     test_pin_fits_the_depth_of_the_part()
+    test_clear_plan_after_a_build_keeps_the_parts()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()
