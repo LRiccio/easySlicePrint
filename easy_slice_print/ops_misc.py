@@ -89,6 +89,17 @@ def safe_filename(name):
     return re.sub(r'[^A-Za-z0-9._-]+', "_", name).strip("_") or "part"
 
 
+def fbx_global_scale(scene, bu_to_mm):
+    """The FBX exporter's extra scale so one unit comes out as `bu_to_mm` millimetres.
+
+    With Apply Unit it already writes a unit as the scene's unit scale in metres. That
+    is right when the scene's units are the real ones; with "1 BU = 1 mm" in the
+    preferences on a metre scene it made every part a thousand times too big, while STL
+    and OBJ honoured the preference.
+    """
+    return bu_to_mm / ((scene.unit_settings.scale_length or 1.0) * 1000.0)
+
+
 class ESP_OT_export(bpy.types.Operator):
     bl_idname = "esp.export_parts"
     bl_label = "Export Parts"
@@ -149,7 +160,11 @@ class ESP_OT_export(bpy.types.Operator):
                     )
                 else:
                     bpy.ops.export_scene.fbx(
-                        filepath=path, use_selection=True, apply_unit_scale=True, object_types={'MESH'}
+                        filepath=path,
+                        use_selection=True,
+                        apply_unit_scale=True,
+                        global_scale=fbx_global_scale(context.scene, bu_to_mm),
+                        object_types={'MESH'},
                     )
                 written.append(path)
         finally:

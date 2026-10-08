@@ -119,6 +119,8 @@ All notable changes to this project are documented here. The format follows
   is relative to the .blend; with no .blend it resolved against wherever Blender was started —
   quietly writing there, or failing with a traceback where that folder is read-only. Export
   now asks you to save first or pick another folder, and reports a folder it cannot create.
+- **FBX export honours "1 unit = 1 mm".** STL and OBJ followed the preference, FBX did not: on a
+  scene in metres every part came out a thousand times too big.
 
 ## [0.3.7-alpha] - 2026-09-21
 

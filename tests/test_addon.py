@@ -616,6 +616,14 @@ def test_plan_workflow():
         )
     finally:
         os.chdir(cwd)
+    from easy_slice_print.ops_misc import fbx_global_scale
+
+    us = sc.unit_settings
+    us.scale_length = 1.0
+    check(abs(fbx_global_scale(sc, 1000.0) - 1.0) < 1e-9, "FBX: a metre scene is written as it is")
+    check(abs(fbx_global_scale(sc, 1.0) - 0.001) < 1e-9, "FBX: with 1 BU = 1 mm a unit comes out as a millimetre")
+    us.scale_length = 0.001
+    check(abs(fbx_global_scale(sc, 1.0) - 1.0) < 1e-6, "FBX: a millimetre scene is written as it is")
     tmp = tempfile.mkdtemp(prefix="esp_export_")
     s.export_folder = tmp
     for fmt in ('STL', 'OBJ', 'FBX'):
