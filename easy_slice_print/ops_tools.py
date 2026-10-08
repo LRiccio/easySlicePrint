@@ -99,6 +99,19 @@ def view_region_under(area, event):
     return None
 
 
+def plan_editable(cls, context):
+    """False while the plan is built: its previews are hidden, edits would not be seen.
+
+    New cuts drawn then went into the hidden plan collection - "added to the plan", and
+    nothing to see - and Select Connector selected a pin nobody could see.
+    """
+    s = context.scene.esp
+    if s.mode == 'PLAN' and s.built:
+        cls.poll_message_set("The plan is built: use Back to Plan to edit it")
+        return False
+    return True
+
+
 def window_region(area):
     for r in area.regions:
         if r.type == 'WINDOW':
@@ -188,7 +201,7 @@ class CutToolBase(jobs.JobMixin):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT' and plan.resolve_target(context) is not None
+        return context.mode == 'OBJECT' and plan.resolve_target(context) is not None and plan_editable(cls, context)
 
     # -- lifecycle ----------------------------------------------------------
     def invoke(self, context, event):

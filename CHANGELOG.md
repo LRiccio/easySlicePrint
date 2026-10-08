@@ -101,6 +101,10 @@ All notable changes to this project are documented here. The format follows
   still ticked *Ready*: a cut unticked or deleted after a Build left its part hidden in the
   backup, so that half of the model disappeared from the scene. The build now marks what it
   stashes, and Back to Plan and a rebuild give all of it back.
+- **A built plan is not edited blind.** After a Build the plan's previews are hidden, yet New
+  Cut, the cut tools, Select Connector, Reset, Swap, Edit Cut Surface and Refresh still ran: a
+  new cut was "added to the plan" with nothing to see, and Select Connector selected a pin no
+  one could see. Those buttons now wait for *Back to Plan*, and their tooltip says so.
 
 ## [0.3.7-alpha] - 2026-09-21
 

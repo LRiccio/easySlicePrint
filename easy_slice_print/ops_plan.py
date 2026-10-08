@@ -16,6 +16,7 @@ from .ops_tools import (
     NAV_EVENTS,
     dist2d,
     over_view,
+    plan_editable,
     restore_cursor,
     set_cursor,
     view_region_under,
@@ -37,7 +38,7 @@ class ESP_OT_new_cut(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT' and plan.resolve_target(context) is not None
+        return context.mode == 'OBJECT' and plan.resolve_target(context) is not None and plan_editable(cls, context)
 
     def invoke(self, context, event):
         tool = context.scene.esp.tool
@@ -76,7 +77,7 @@ class ESP_OT_swap_pin_side(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return active_record(context) is not None
+        return active_record(context) is not None and plan_editable(cls, context)
 
     def execute(self, context):
         rec = active_record(context)
@@ -95,7 +96,7 @@ class ESP_OT_reset_pin(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return active_record(context) is not None
+        return active_record(context) is not None and plan_editable(cls, context)
 
     def execute(self, context):
         rec = active_record(context)
@@ -116,7 +117,7 @@ class ESP_OT_select_pin(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return active_record(context) is not None and context.mode == 'OBJECT'
+        return active_record(context) is not None and context.mode == 'OBJECT' and plan_editable(cls, context)
 
     def execute(self, context):
         rec = active_record(context)
@@ -139,6 +140,10 @@ class ESP_OT_refresh_pins(bpy.types.Operator):
     bl_label = "Refresh Connectors"
     bl_description = "Re-estimate connector position and size from the current cut surfaces"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return plan_editable(cls, context)
 
     def execute(self, context):
         for rec in context.scene.esp.cuts:
@@ -175,7 +180,7 @@ class ESP_OT_edit_surface(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return active_record(context) is not None and context.mode == 'OBJECT'
+        return active_record(context) is not None and context.mode == 'OBJECT' and plan_editable(cls, context)
 
     def invoke(self, context, event):
         rec = active_record(context)

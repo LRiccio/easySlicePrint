@@ -910,6 +910,23 @@ def test_back_to_plan_gives_every_source_back():
         check(obj is not None and name not in backup and not obj.hide_get(), f"{name} is back in view")
 
 
+def test_a_built_plan_is_not_edited_blind():
+    """While built the plan's previews are hidden, so the plan's editing buttons wait."""
+    print("== a built plan is not edited blind")
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    cube = make_slab("Cube", size=(20.0, 20.0, 60.0))
+    plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 0.0)])
+    ops = ("new_cut", "select_pin", "reset_pin", "swap_pin_side", "edit_surface", "refresh_pins", "cut_straight")
+    check(all(getattr(bpy.ops.esp, op).poll() for op in ops), "every editing button works on a plan")
+    bpy.ops.esp.build()
+    bpy.context.view_layer.objects.active = bpy.data.objects["Cube_PART_001"]
+    blocked = [op for op in ops if not getattr(bpy.ops.esp, op).poll()]
+    check(blocked == list(ops), f"none of them while it is built ({blocked})")
+    bpy.ops.esp.return_to_plan()
+    check(all(getattr(bpy.ops.esp, op).poll() for op in ops), "and all of them again after Back to Plan")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1360,6 +1377,7 @@ if __name__ == "__main__":
     test_clear_plan_after_a_build_keeps_the_parts()
     test_a_cancelled_build_goes_back_to_the_plan()
     test_back_to_plan_gives_every_source_back()
+    test_a_built_plan_is_not_edited_blind()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()
