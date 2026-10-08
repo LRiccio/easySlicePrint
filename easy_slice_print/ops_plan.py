@@ -407,7 +407,9 @@ class ESP_OT_edit_surface(bpy.types.Operator):
                 self.push_history()
         elif event.type in {'X', 'DEL'} and event.value == 'PRESS':
             min_pts = 3 if self.closed else 2
-            if self.hover is not None and len(self.points) > min_pts:
+            # not mid drag or slide: the point under the mouse is the one being moved, and
+            # removing it would hand the drag to its neighbour - or run past the end of the list
+            if not busy and self.hover is not None and len(self.points) > min_pts:
                 self.points.pop(self.hover)
                 self.hover = None
                 self.commit(context)

@@ -1100,6 +1100,11 @@ def test_edit_cut_surface_modal():
     res = ses._modal(bpy.context, FakeEvent('LEFTMOUSE', 'PRESS', x=900))
     check(res == {'PASS_THROUGH'}, "a click on the sidebar reaches the sidebar")
 
+    # X while a point is being dragged would delete the point under the mouse
+    count = len(ses.points)
+    ses.hover = ses.drag = 3
+    ses._modal(bpy.context, FakeEvent('X', 'PRESS'))
+    check(len(ses.points) == count and ses.drag == 3, "X does nothing in the middle of a drag")
     ses.end(bpy.context)
 
     ses = edit_session(rec)

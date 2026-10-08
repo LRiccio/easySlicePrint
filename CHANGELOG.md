@@ -42,6 +42,8 @@ All notable changes to this project are documented here. The format follows
   window, like the cut tools did, so a click on the sidebar could grab a control point. Off the
   view the clicks now reach the interface, it works in the view under the mouse in Quad View,
   and a cut deleted or undone while it is open closes it cleanly.
+- **X in the middle of a drag no longer deletes the point being dragged.** In Edit Cut Surface
+  the drag then jumped to the neighbouring point, or failed outright on the last one.
 
 ## [0.3.7-alpha] - 2026-09-21
 
