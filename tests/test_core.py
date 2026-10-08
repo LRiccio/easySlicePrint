@@ -1306,6 +1306,44 @@ def test_several_connectors_on_one_cut():
     check(section.spread_points(strip_v, strip_f, Vector((0, 0, 1)), 12, 3.5, 6.0) == [], "too many do not fit")
 
 
+def signed_volume(mesh):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    v = bm.calc_volume(signed=True)
+    bm.free()
+    return v
+
+
+def loose_pieces(mesh):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.index_update()
+    n = len(connectors._vert_islands(bm))
+    bm.free()
+    return n
+
+
+def test_mirrored_object():
+    """A model with a negative scale is cut like any other: right side out, pin fused."""
+    print("== mirrored object")
+    reset_scene()
+    obj = make_cylinder("Mirrored")
+    obj.scale = (-1.0, 1.0, 1.0)
+    bpy.context.view_layer.update()
+    copy = mesh_utils.world_mesh_copy(bpy.context, obj, "_mirror_check")
+    check(signed_volume(copy) > 0.0, f"the world copy is right side out ({signed_volume(copy):.0f})")
+    mesh_utils.remove_mesh(copy)
+    verts, faces = surfaces.plane_patch(Vector((0, 0, 0)), Vector((0, 0, 1)), Vector((1, 0, 0)), 60)
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, -1)), 6.0, 7.0)
+    spec = cutting.CutSpec(
+        contacts=[cutting.ContactSpec(verts, faces, True, pm, 'CYLINDER', None)], gap=0.2, clearance=0.1
+    )
+    a, b, _secs = cutting.perform_cut(bpy.context, obj, spec, ("A", "B"), out_collection("mirror_out"))
+    for part in (a, b):
+        check(signed_volume(part.data) > 0.0, f"{part.name} is right side out ({signed_volume(part.data):.0f})")
+        check(loose_pieces(part.data) == 1, f"{part.name} is one piece, the pin fused to it")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1329,6 +1367,7 @@ if __name__ == "__main__":
     test_runs_and_bands()
     test_ribbon_follows_a_silhouette()
     test_several_connectors_on_one_cut()
+    test_mirrored_object()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

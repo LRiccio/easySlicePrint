@@ -71,9 +71,22 @@ def evaluated_mesh_copy(context, obj, name):
 
 
 def world_mesh_copy(context, obj, name):
-    """Evaluated mesh of `obj` with the world matrix applied."""
+    """Evaluated mesh of `obj` with the world matrix applied.
+
+    A mirrored object (negative scale on one or three axes) turns inside out when its
+    matrix is baked into the vertices: the faces keep their winding while the space
+    flips. Its faces are reversed back, or every boolean after this works on a mesh
+    whose inside is its outside.
+    """
     me = evaluated_mesh_copy(context, obj, name)
     me.transform(obj.matrix_world)
+    if obj.matrix_world.is_negative:
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
     return me
 
 

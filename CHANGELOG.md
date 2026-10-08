@@ -47,6 +47,9 @@ All notable changes to this project are documented here. The format follows
 - **Enter in the middle of a drag keeps the loop you see.** Finishing Edit Cut Surface with a
   freehand point still held kept the quick draft of the surface, which leaves the cutter on the
   old loop, so Build cut along the line from before the drag.
+- **Mirrored models are cut right side out.** A model with a negative scale (mirrored with
+  Ctrl+M or scaled by -1) came out inside out: both parts had their normals pointing in, and
+  the pin was not fused to its part.
 
 ## [0.3.7-alpha] - 2026-09-21
 
