@@ -73,9 +73,10 @@ def restore_cursor(window):
 
 
 # Parts of the 3D Viewport that are interface, not view: the sidebar (N), the toolbar (T),
-# the headers and the asset shelf. With Region Overlap on they are drawn over the view,
-# so the view's own rectangle alone does not say whether the mouse is on a button.
-UI_REGIONS = {'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER', 'ASSET_SHELF', 'ASSET_SHELF_HEADER', 'FOOTER'}
+# the headers, the Adjust Last Operation panel (HUD) and the asset shelf. With Region
+# Overlap on they are drawn over the view, so the view's own rectangle alone does not say
+# whether the mouse is on a button.
+UI_REGIONS = {'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER', 'HUD', 'ASSET_SHELF', 'ASSET_SHELF_HEADER', 'FOOTER'}
 
 
 def _inside(region, x, y):

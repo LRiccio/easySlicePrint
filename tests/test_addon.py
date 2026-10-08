@@ -1061,7 +1061,8 @@ def test_cut_tools_leave_the_interface_alone():
             R('HEADER', 100, 776, 1000, 24),
             R('TOOLS', 100, 0, 40, 776),
             R('UI', 850, 0, 250, 776),
-            R('HUD', 0, 0, 1, 1),  # collapsed regions are left out
+            R('HUD', 150, 20, 200, 120),  # Adjust Last Operation, floating over the view
+            R('ASSET_SHELF', 0, 0, 1, 1),  # collapsed regions are left out
             view,
         ]
 
@@ -1069,6 +1070,7 @@ def test_cut_tools_leave_the_interface_alone():
     check(not over_view(Area, view, E(900, 400)), "the sidebar drawn over the view is interface")
     check(not over_view(Area, view, E(120, 400)), "so is the toolbar")
     check(not over_view(Area, view, E(500, 790)), "and the header")
+    check(not over_view(Area, view, E(200, 60)), "and the Adjust Last Operation panel")
     check(not over_view(Area, view, E(50, 400)), "another editor is not the view")
     check(not over_view(Area, None, E(500, 400)), "no view region, nothing is the view")
 

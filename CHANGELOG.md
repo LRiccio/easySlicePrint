@@ -32,6 +32,8 @@ All notable changes to this project are documented here. The format follows
   could take the model away under it; the next click then failed and left the tool's drawing,
   cursor and status text on screen. Starting another tool now replaces the armed one, a model
   that is gone ends the tool with a message, and any unexpected error ends it cleanly.
+- **The Adjust Last Operation panel answers while a cut tool is armed.** It floats over the
+  view and was taken for part of it, so a click on it started a stroke.
 
 ## [0.3.7-alpha] - 2026-09-21
 
