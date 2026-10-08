@@ -531,6 +531,103 @@ def inscribed_circle(verts, faces, normal, resolution=40, refinements=4):
     return best, best_d * 2.0
 
 
+def spread_points(verts, faces, normal, count, clearance, separation, resolution=48):
+    """`count` points on a flat patch, as far apart as the material allows.
+
+    Used to lay out several connectors on one cut face. Every point keeps at least
+    `clearance` from the outline of the face (the pin's radius plus a rim of material
+    around its socket), and the points are spread to make the smallest distance
+    between any two of them as large as possible - pins far apart resist twisting
+    best. Returns [] when `count` points cannot be placed `separation` apart; the
+    caller then tries smaller pins or fewer of them.
+    """
+    if count < 1 or not verts or not faces:
+        return []
+    n = Vector(normal).normalized()
+    u, v = surfaces.plane_basis(n)
+    patch = mesh_utils.bvh_from_pydata(verts, faces)
+    extent = section_extent(verts)
+    wall = _boundary_wall(verts, faces, n, max(extent * 1e-3, 1e-6))
+    if wall is None:
+        return []
+    origin = surfaces.patch_center(verts)
+    inside_eps = max(extent * 1e-4, 1e-7)
+
+    def score(p):
+        loc, _nor, _i, _d = patch.find_nearest(p)
+        if loc is None or (loc - p).length > inside_eps:
+            return -1.0
+        loc, _nor, _i, _d = wall.find_nearest(p)
+        return -1.0 if loc is None else (loc - p).length
+
+    samples = _face_samples(verts, faces, rows=1)  # face centroids: what a curved patch gets
+    us = [(Vector(p) - origin).dot(u) for p in verts]
+    vs = [(Vector(p) - origin).dot(v) for p in verts]
+    lo_u, hi_u, lo_v, hi_v = min(us), max(us), min(vs), max(vs)
+    for i in range(resolution + 1):
+        for j in range(resolution + 1):
+            samples.append(
+                origin + u * (lo_u + (hi_u - lo_u) * i / resolution) + v * (lo_v + (hi_v - lo_v) * j / resolution)
+            )
+    feasible = []
+    for p in samples:
+        d = score(p)
+        if d >= clearance:
+            feasible.append((Vector(p), d))
+    if not feasible:
+        return []
+    if count == 1:
+        return [max(feasible, key=lambda t: t[1])[0]]
+    if len(feasible) < count:
+        return []
+    mid = sum((p for p, _d in feasible), Vector((0.0, 0.0, 0.0))) / len(feasible)
+    chosen = [max(feasible, key=lambda t: ((t[0] - mid).length, t[1]))]
+    while len(chosen) < count:  # farthest point sampling
+        chosen.append(max(feasible, key=lambda t: (min((t[0] - c[0]).length for c in chosen), t[1])))
+    # Distances within a few percent of each other count as equal, and the point nearer
+    # the middle of the face wins between them: on a long thin face the pins then line
+    # up on the middle of the strip instead of zig-zagging out to its corners for a hair
+    # more spread, and on a round or square one they sit evenly instead of drifting.
+    tol = max(separation * 0.04, extent * 1e-3, 1e-7)
+    for _round in range(12):  # then move each point where it is farthest from the others
+        moved = False
+        for k in range(count):
+            others = [c[0] for i, c in enumerate(chosen) if i != k]
+
+            def rank(t, others=others):
+                gap = min((t[0] - o).length for o in others)
+                return (round(gap / tol), -round((t[0] - mid).length / tol, 1))
+
+            best = max(feasible, key=rank)
+            if rank(best) > rank(chosen[k]):
+                chosen[k] = best
+                moved = True
+        if not moved:
+            break
+    pts = [c[0] for c in chosen]
+    closest = min((pts[i] - pts[j]).length for i in range(count) for j in range(i + 1, count))
+    if closest < separation:
+        return []
+    # Tidy up: give back a sliver of that spread to pull every point as near the middle
+    # as it will go. The coordinate search above stops on whatever row of samples it
+    # met first, which leaves pins on a thin strip a millimetre off its centre line.
+    floor = max(closest * 0.99, separation)
+    for _round in range(6):
+        moved = False
+        for k in range(count):
+            others = [p for i, p in enumerate(pts) if i != k]
+            ok = [t[0] for t in feasible if min((t[0] - o).length for o in others) >= floor]
+            if not ok:
+                continue
+            best = min(ok, key=lambda q: (q - mid).length)
+            if (best - mid).length < (pts[k] - mid).length - 1e-9:
+                pts[k] = best
+                moved = True
+        if not moved:
+            break
+    return pts
+
+
 def section_extent(verts):
     """Longest edge of the section's bounding box - a scale for margins and messages."""
     if not verts:

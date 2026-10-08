@@ -767,20 +767,34 @@ def surface_world_patch(obj):
     return verts, faces
 
 
-def create_pin_object(context, name, shape_id, matrix):
+def layout_key(offsets):
+    """Rounded, flat form of a layout - what a pin stores and is compared by."""
+    return [round(c, 5) for o in (offsets or [(0.0, 0.0)]) for c in o]
+
+
+def _store_layout(obj, layout):
+    obj["esp_layout"] = layout_key(layout.offsets)
+    obj["esp_layout_count"] = len(layout.offsets)
+    obj["esp_layout_scale"] = layout.scale
+
+
+def create_pin_object(context, name, shape_id, matrix, layout=None):
+    layout = layout or PinLayout()
     shape, custom = connectors.resolve_shape(shape_id)
-    bm = connectors.unit_connector_bmesh(shape, custom)
+    bm = connectors.unit_layout_bmesh(shape, custom, layout.offsets)
     me = mesh_utils.bmesh_to_mesh(bm, name)
     bm.free()
     obj = _preview_object(context.scene, name, me, 'pin', ORANGE, "ESP_Preview_Pin")
     obj.matrix_world = matrix
     obj["esp_shape"] = shape_id
+    _store_layout(obj, layout)
     return obj
 
 
-def update_pin_mesh(obj, shape_id):
+def update_pin_mesh(obj, shape_id, layout=None):
+    layout = layout or PinLayout()
     shape, custom = connectors.resolve_shape(shape_id)
-    bm = connectors.unit_connector_bmesh(shape, custom)
+    bm = connectors.unit_layout_bmesh(shape, custom, layout.offsets)
     me = mesh_utils.bmesh_to_mesh(bm, obj.name)
     bm.free()
     me.materials.append(_material("ESP_Preview_Pin", ORANGE))
@@ -788,6 +802,17 @@ def update_pin_mesh(obj, shape_id):
     obj.data = me
     mesh_utils.remove_mesh(old)
     obj["esp_shape"] = shape_id
+    _store_layout(obj, layout)
+
+
+def pin_needs_rebuild(obj, shape_id, layout):
+    """A new shape or a new layout replaces the preview mesh (and any edit-mode reshape)."""
+    if obj.get("esp_shape") != shape_id:
+        return True
+    stored = obj.get("esp_layout")
+    old = list(stored) if stored is not None else [0.0, 0.0]
+    new = layout_key(layout.offsets)
+    return len(old) != len(new) or any(abs(a - b) > 1e-4 for a, b in zip(old, new))
 
 
 def pin_unit_mesh(pin):
@@ -870,11 +895,133 @@ def _set_contact_attr(rec, base, i, value):
     setattr(rec, f"{base}_{'ab'[i]}", value)
 
 
-def auto_pin_matrix(context, rec, i):
+def auto_pin_matrix(context, rec, i, layout=None):
     center = Vector(_contact_attr(rec, "center", i))
     normal = Vector(_contact_attr(rec, "normal", i))
     w, h = contact_size_bu(context, rec, _contact_attr(rec, "inscribed", i))
-    return connectors.connector_matrix(center, cutting.protrude_direction(normal, rec.pin_side), w, h)
+    k = layout.scale if layout is not None else 1.0
+    return connectors.connector_matrix(center, cutting.protrude_direction(normal, rec.pin_side), w * k, h * k)
+
+
+# ----------------------------------------------------------------------------
+# several connectors on one cut face
+# ----------------------------------------------------------------------------
+class PinLayout:
+    """Where the connectors of one contact go.
+
+    `offsets` are (x, y) positions in the connector's unit space (1.0 = one connector
+    width, measured in the pin's own frame), `scale` is how much the preset size was
+    reduced to make them fit, `asked` is how many the user wanted.
+    """
+
+    def __init__(self, offsets=None, scale=1.0, asked=1):
+        self.offsets = offsets or [(0.0, 0.0)]
+        self.scale = scale
+        self.asked = asked
+
+    @property
+    def placed(self):
+        return len(self.offsets)
+
+
+# A preset sized pin may shrink this far to fit the count asked for; a Custom one never does.
+LAYOUT_SHRINK = (1.0, 0.85, 0.72, 0.6, 0.5)
+# Material kept round every socket: a share of the pin radius, but never under this (mm).
+LAYOUT_RIM_RATIO = 0.5
+LAYOUT_RIM_MIN_MM = 0.8
+
+_layout_cache = {}
+
+
+def _line_layout(center, x_axis, inscribed, count, r, rim):
+    """Fallback for a surface that is not the real cut face: a row across the inscribed circle."""
+    half = inscribed * 0.5 - r - rim
+    if half <= 0.0:
+        return []
+    step = 2.0 * half / (count - 1)
+    if step < 2.0 * r + rim:
+        return []
+    return [center + x_axis * (-half + step * j) for j in range(count)]
+
+
+def compute_layout(context, src, verts, faces, is_cut_face, center, normal, inscribed):
+    """PinLayout for `src.pin_count` connectors on one cut surface (world space input).
+
+    The pins are spread over the face as far apart as the material allows (see
+    `section.spread_points`), each keeping a rim of material round its socket. When
+    they do not fit, preset sized pins get smaller first, then fewer are placed.
+    """
+    asked = max(1, int(getattr(src, "pin_count", 1)))
+    if asked <= 1 or not src.add_pin:
+        return PinLayout(asked=asked)
+    u = mm(context)
+    w, _h = contact_size_bu(context, src, inscribed)
+    center = Vector(center)
+    normal = Vector(normal)
+    frame = connectors.connector_frame(center, cutting.protrude_direction(normal, src.pin_side))
+    x_axis = frame.col[0].xyz.normalized()
+    y_axis = frame.col[1].xyz.normalized()
+    scales = (1.0,) if src.size_preset == 'CUSTOM' else LAYOUT_SHRINK
+    key = (
+        tuple(round(c, 6) for c in center),
+        tuple(round(c, 6) for c in normal),
+        round(inscribed, 6),
+        round(w, 6),
+        asked,
+        src.pin_side,
+        scales,
+        bool(is_cut_face),
+        len(verts),
+        len(faces),
+        tuple(round(c, 6) for c in (verts[0] if verts else (0.0, 0.0, 0.0))),
+        tuple(round(c, 6) for c in (verts[-1] if verts else (0.0, 0.0, 0.0))),
+    )
+    hit = _layout_cache.get(key)
+    if hit is not None:
+        return PinLayout(list(hit[0]), hit[1], asked)
+    found = None
+    for count in range(asked, 1, -1):
+        for k in scales:
+            r = w * k * 0.5
+            rim = max(r * LAYOUT_RIM_RATIO, LAYOUT_RIM_MIN_MM * u)
+            pts = []
+            if is_cut_face:
+                pts = section.spread_points(verts, faces, normal, count, r + rim, 2.0 * r + rim)
+            if not pts:
+                pts = _line_layout(center, x_axis, inscribed, count, r, rim)
+            if pts:
+                size = w * k
+                offsets = [((p - center).dot(x_axis) / size, (p - center).dot(y_axis) / size) for p in pts]
+                found = (offsets, k)
+                break
+        if found is not None:
+            break
+    if found is None:
+        found = ([(0.0, 0.0)], 1.0)
+    if len(_layout_cache) > 64:
+        _layout_cache.clear()
+    _layout_cache[key] = found
+    return PinLayout(list(found[0]), found[1], asked)
+
+
+def record_layout(context, rec, i):
+    """The layout for contact `i` of a cut record, measured on its preview surface."""
+    if max(1, int(rec.pin_count)) <= 1 or not rec.add_pin:
+        return PinLayout(asked=max(1, int(rec.pin_count)))
+    sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+    if sobj is None:
+        return PinLayout(asked=rec.pin_count)
+    verts, faces = surface_world_patch(sobj)
+    return compute_layout(
+        context,
+        rec,
+        verts,
+        faces,
+        bool(sobj.get("esp_cut_face", False)),
+        _contact_attr(rec, "center", i),
+        _contact_attr(rec, "normal", i),
+        _contact_attr(rec, "inscribed", i),
+    )
 
 
 def apply_preset(context, rec):
@@ -987,8 +1134,9 @@ def add_record(context, target, cut_type, contacts):
         apply_preset(context, rec)
         apply_fit(context, rec)
         for i in range(len(contacts)):
-            matrix = auto_pin_matrix(context, rec, i)
-            pin = create_pin_object(context, f"ESP_Pin_{rec.name}_{'AB'[i]}", rec.shape, matrix)
+            layout = record_layout(context, rec, i)
+            matrix = auto_pin_matrix(context, rec, i, layout)
+            pin = create_pin_object(context, f"ESP_Pin_{rec.name}_{'AB'[i]}", rec.shape, matrix, layout)
             _set_contact_attr(rec, "pin", i, pin.name)
             _set_contact_attr(rec, "pin_auto", i, flat(matrix))
             pin.hide_viewport = not rec.add_pin
@@ -1011,10 +1159,13 @@ def on_record_settings_changed(context, rec):
             pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
             if pin is None:
                 continue
-            if pin.get("esp_shape") != rec.shape:
-                update_pin_mesh(pin, rec.shape)
+            layout = record_layout(context, rec, i)
+            if pin_needs_rebuild(pin, rec.shape, layout):
+                update_pin_mesh(pin, rec.shape, layout)
+            else:
+                _store_layout(pin, layout)
             old_auto = unflat(_contact_attr(rec, "pin_auto", i))
-            new_auto = auto_pin_matrix(context, rec, i)
+            new_auto = auto_pin_matrix(context, rec, i, layout)
             delta = user_delta(old_auto, pin.matrix_basis)
             pin.matrix_world = _frame(new_auto) @ delta @ _scale(new_auto)
             _set_contact_attr(rec, "pin_auto", i, flat(new_auto))
@@ -1068,8 +1219,9 @@ def reset_pins(context, rec):
             pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
             if pin is None:
                 continue
-            update_pin_mesh(pin, rec.shape)
-            auto = auto_pin_matrix(context, rec, i)
+            layout = record_layout(context, rec, i)
+            update_pin_mesh(pin, rec.shape, layout)
+            auto = auto_pin_matrix(context, rec, i, layout)
             pin.matrix_world = auto
             _set_contact_attr(rec, "pin_auto", i, flat(auto))
     finally:
@@ -1233,6 +1385,7 @@ def quick_spec(context, target, contacts):
     specs = []
     for data in contacts:
         pm = None
+        offsets = None
         if settings.add_pin:
             center, normal, inscribed = contact_frame(
                 context,
@@ -1244,8 +1397,13 @@ def quick_spec(context, target, contacts):
                 data.center_hint,
                 data.is_cut_face,
             )
+            layout = compute_layout(
+                context, settings, data.verts, data.faces, data.is_cut_face, center, normal, inscribed
+            )
             w, h = contact_size_bu(context, settings, inscribed)
+            w, h = w * layout.scale, h * layout.scale
             pm = connectors.connector_matrix(center, cutting.protrude_direction(normal, settings.pin_side), w, h)
+            offsets = layout.offsets if layout.placed > 1 else None
         verts, faces = data.cutter if data.cutter is not None else (data.verts, data.faces)
         specs.append(
             cutting.ContactSpec(
@@ -1255,6 +1413,7 @@ def quick_spec(context, target, contacts):
                 pm,
                 shape,
                 custom,
+                offsets=offsets,
                 regions_skipped=data.regions_skipped,
                 preview=(data.verts, data.faces),
             )

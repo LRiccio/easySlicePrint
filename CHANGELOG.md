@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Several connectors on one cut.** *Count* in the Connector panel puts up to eight pins on a
+  cut instead of one. They are spread over the cut face as far apart as the material allows —
+  pins far apart are what stop the parts twisting — each keeping a rim of material round its
+  socket, so on a long thin face they line up down its middle. When they do not fit, preset
+  sizes shrink (down to half), then fewer are placed, and the panel says so; a *Custom* width
+  is never changed. Works in Quick Cut and Plan mode, on every cut tool and on both contacts of
+  a Base Split. In Plan mode the preview shows every pin and G/R/S moves them as a group
+  (`plan.compute_layout`, `section.spread_points`).
+
+### Fixed
+- **A connector with more than one lobe gets the clearance it asked for.** The socket was grown
+  about the connector's origin, so a lobe off to the side — duplicated in edit mode, or a pin of
+  a multi-pin layout — got a socket shifted outwards: too wide on the outer side and cutting
+  into the pin on the inner one. Every separate piece is now grown about its own centre.
+
 ## [0.3.7-alpha] - 2026-09-21
 
 ### Changed

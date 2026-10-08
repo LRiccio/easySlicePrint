@@ -33,6 +33,9 @@ class ContactSpec:
     # When set it is the shape that gets built; `shape`/`custom_obj` only say how to
     # make one from scratch, which is all Quick mode has.
     pin_mesh: object = None
+    # Unit-space (x, y) positions of every connector on this contact, when there is more
+    # than one and no `pin_mesh` already carries them (Quick mode). None: one, centred.
+    offsets: list | None = None
     regions_skipped: int = 0  # regions the plane crosses that this surface leaves uncut
     # The surface the user sees, as (verts, faces), when `verts`/`faces` is a separate cutter
     # (a plane's quad, a curve's flat ribbon, a loop's skirted membrane). A failed cut is
@@ -264,7 +267,9 @@ def apply_connectors_steps(context, mesh_a, mesh_b, spec):
                 continue
             n += 1
             yield f"adding connector {n}/{total}" if total > 1 else "adding the connector"
-            pin = connectors.connector_mesh(c.shape, c.custom_obj, c.pin_matrix, "_esp_pin", unit_mesh=c.pin_mesh)
+            pin = connectors.connector_mesh(
+                c.shape, c.custom_obj, c.pin_matrix, "_esp_pin", unit_mesh=c.pin_mesh, offsets=c.offsets
+            )
             socket = connectors.connector_mesh(
                 c.shape,
                 c.custom_obj,
@@ -273,6 +278,7 @@ def apply_connectors_steps(context, mesh_a, mesh_b, spec):
                 radial_extra=spec.clearance,
                 tip_extra=spec.tip_extra,
                 unit_mesh=c.pin_mesh,
+                offsets=c.offsets,
             )
             pin_target, socket_target = (mesh_a, mesh_b) if spec.pin_side == 'A' else (mesh_b, mesh_a)
             half = mesh_utils.boolean_mesh(context, pin_target, pin, 'UNION', spec.solver)
