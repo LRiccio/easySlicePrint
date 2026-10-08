@@ -187,6 +187,64 @@ def give_back_sources(context):
     return sources
 
 
+# ----------------------------------------------------------------------------
+# names that survive a rename
+# ----------------------------------------------------------------------------
+# The plan refers to objects by name (StringProperty), so renaming the model in the
+# outliner used to break it: Build said the source no longer existed, and the only way
+# on it offered was clearing every cut. Each object the plan refers to carries the name
+# it was referred to by; when that name is gone, the object still carrying it was
+# renamed, and the plan is pointed at its new name. A copy (Shift+D) carries the same
+# name, so the object's session id is kept beside it to tell the original from its
+# copies; when that cannot tell them apart, the reference is left alone rather than
+# pointed at the wrong object.
+REF_KEY = "esp_ref_name"
+REF_UID = "esp_ref_uid"
+_RECORD_FIELDS = ("target", "surface_a", "surface_b", "pin_a", "pin_b")
+
+
+def remember(obj):
+    """Mark `obj` as referred to by the plan under its current name."""
+    if obj is not None:
+        obj[REF_KEY] = obj.name
+        obj[REF_UID] = getattr(obj, "session_uid", 0)
+
+
+def heal_names(scene):
+    """Follow renamed objects: re-point every plan reference whose name is gone. -> changed"""
+    settings = getattr(scene, "esp", None)
+    if settings is None:
+        return False
+    objects = bpy.data.objects
+    names = [settings.base_object] + [getattr(r, f) for r in settings.cuts for f in _RECORD_FIELDS]
+    missing = {n for n in names if n and objects.get(n) is None}
+    if not missing:
+        return False
+    candidates = {}
+    for obj in objects:
+        old = obj.get(REF_KEY)
+        if old in missing and old != obj.name:
+            candidates.setdefault(old, []).append(obj)
+    renamed = {}
+    for old, objs in candidates.items():
+        if len(objs) > 1:  # the original and its copies: the original kept its session id
+            objs = [o for o in objs if o.get(REF_UID) == getattr(o, "session_uid", -1)]
+        if len(objs) == 1:
+            renamed[old] = objs[0]
+    if not renamed:
+        return False
+    if settings.base_object in renamed:
+        settings.base_object = renamed[settings.base_object].name
+    for rec in settings.cuts:
+        for f in _RECORD_FIELDS:
+            old = getattr(rec, f)
+            if old in renamed:
+                setattr(rec, f, renamed[old].name)
+    for obj in renamed.values():
+        remember(obj)
+    return True
+
+
 def plan_sources(context):
     """Every live model the plan cuts into, the base first.
 
@@ -365,6 +423,7 @@ def _preview_object(scene, name, mesh, kind, color, mat_name):
     obj.hide_render = True
     obj.color = color
     obj["esp_preview"] = kind
+    remember(obj)
     mesh.materials.append(_material(mat_name, color))
     return obj
 
@@ -1291,10 +1350,12 @@ def add_record(context, target, cut_type, contacts):
             # an earlier build: its `esp_base` points at the model before those cuts,
             # and rooting the plan there would undo every cut already approved
             settings.base_object = target.name
+            remember(target)
         rec = settings.cuts.add()
         rec.name = unique_record_name(settings, "Base Split" if len(contacts) == 2 else PREFIX[cut_type])
         rec.cut_type = cut_type
         rec.target = target.name
+        remember(target)
         rec.two_contact = len(contacts) == 2
         active = settings.cuts[settings.active_cut] if 0 <= settings.active_cut < len(settings.cuts) - 1 else None
         copy_connector_props(active if active is not None else settings, rec)
@@ -1673,6 +1734,7 @@ def depsgraph_handler(scene, depsgraph):
     settings = getattr(scene, "esp", None)
     if settings is None or not len(settings.cuts):
         return
+    heal_names(scene)  # a rename in the outliner ends up here too
     changed = False
     for rec in settings.cuts:
         for name in (rec.surface_a, rec.surface_b):

@@ -530,6 +530,7 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
         s = context.scene.esp
         scene = context.scene
         t0 = time.time()
+        plan.heal_names(scene)
         base = bpy.data.objects.get(s.base_object)
         if base is None:
             raise cutting.CutError("The plan's source object no longer exists. Clear the plan.")
@@ -730,7 +731,9 @@ class ESP_OT_approve(bpy.types.Operator):
         for rec in s.cuts:
             target = bpy.data.objects.get(rec.target) if rec.target else None
             if parts and (target is None or target in consumed):
-                rec.target = _pick_target(parts, Vector(rec.anchor)).name
+                picked = _pick_target(parts, Vector(rec.anchor))
+                rec.target = picked.name
+                plan.remember(picked)
                 plan.refresh_record_frames(context, rec)
         if not s.keep_original:
             for o in consumed:

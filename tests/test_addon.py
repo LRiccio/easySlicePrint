@@ -927,6 +927,37 @@ def test_a_built_plan_is_not_edited_blind():
     check(all(getattr(bpy.ops.esp, op).poll() for op in ops), "and all of them again after Back to Plan")
 
 
+def test_a_renamed_model_keeps_its_plan():
+    """Renaming the model, or a preview, after planning does not break the plan."""
+    print("== a renamed model keeps its plan")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    cube = make_slab("Statue", size=(20.0, 20.0, 60.0))
+    rec = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 0.0)])
+    cube.name = "Statue_final"
+    bpy.data.objects[rec.pin_a].name = "my pin"
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the plan still builds")
+    check(s.base_object == "Statue_final" and rec.target == "Statue_final", "and follows the new name")
+    check(rec.pin_a == "my pin", "a renamed preview is followed too")
+    col = bpy.data.collections[s.built_collection]
+    check(len(col.objects) == 2, f"two parts ({len(col.objects)})")
+
+    # a plane's preview surface, renamed: it keeps the plane's own anchor next to the tag
+    bpy.ops.esp.return_to_plan()
+    surface = bpy.data.objects[rec.surface_a]
+    surface.name = "my plane"
+    check(bpy.ops.esp.build() == {'FINISHED'} and rec.surface_a == "my plane", "a renamed plane surface is followed")
+    bpy.ops.esp.return_to_plan()
+
+    # a copy of the model carries the same tag: renaming the original must not pick the copy
+    copy = bpy.data.objects["Statue_final"].copy()
+    bpy.context.scene.collection.objects.link(copy)
+    bpy.data.objects["Statue_final"].name = "Statue_v2"
+    plan.heal_names(sc)
+    check(s.base_object == "Statue_v2", f"the original, not its copy, is followed ({s.base_object})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1378,6 +1409,7 @@ if __name__ == "__main__":
     test_a_cancelled_build_goes_back_to_the_plan()
     test_back_to_plan_gives_every_source_back()
     test_a_built_plan_is_not_edited_blind()
+    test_a_renamed_model_keeps_its_plan()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()
