@@ -1436,6 +1436,33 @@ def test_parts_are_named_by_where_their_mass_is():
     check(names == ("UPPER", "LOWER"), f"the slice on top is UPPER ({names})")
 
 
+def test_materials_survive_the_connectors():
+    """A two-colour model keeps its colours, face by face, through the pin booleans."""
+    print("== materials survive the connectors")
+    reset_scene()
+    obj = make_cylinder("TwoTone")
+    red, blue = bpy.data.materials.new("Red"), bpy.data.materials.new("Blue")
+    obj.data.materials.append(red)
+    obj.data.materials.append(blue)
+    for poly in obj.data.polygons:
+        poly.material_index = 0 if poly.center.z > 0.0 else 1
+    verts, faces = surfaces.plane_patch(Vector((0, 0, 0)), Vector((0, 0, 1)), Vector((1, 0, 0)), 60)
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, -1)), 6.0, 7.0)
+    spec = cutting.CutSpec(
+        contacts=[cutting.ContactSpec(verts, faces, True, pm, 'CYLINDER', None)], gap=0.2, clearance=0.1
+    )
+    a, b, _secs = cutting.perform_cut(bpy.context, obj, spec, ("Top", "Bottom"), out_collection("mat_out"))
+    for part, colour in ((a, 0), (b, 1)):
+        slots = [m.name if m else None for m in part.data.materials]
+        check(slots == ["Red", "Blue"], f"{part.name} has the model's two slots ({slots})")
+        outside = [p for p in part.data.polygons if abs(p.center.z) > 1.0 and (p.center.xy.length > 9.0)]
+        right = sum(1 for p in outside if p.material_index == colour)
+        check(
+            outside and right == len(outside),
+            f"{part.name} keeps its colour on its outer faces ({right}/{len(outside)})",
+        )
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1462,6 +1489,7 @@ if __name__ == "__main__":
     test_mirrored_object()
     test_a_connector_off_the_cut_face()
     test_parts_are_named_by_where_their_mass_is()
+    test_materials_survive_the_connectors()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

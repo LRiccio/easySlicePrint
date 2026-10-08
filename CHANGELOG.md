@@ -76,6 +76,10 @@ All notable changes to this project are documented here. The format follows
   or curve was drawn the other way round its pin was built upside down — a tapered pin with its
   wide end out, which cannot be assembled. Every pin now points from the pin part into the
   socket part.
+- **Materials survive the connectors.** A part with pins lost its colours: every face ended up
+  on the first (or an empty) material slot, even on a single-material model. Parts now keep the
+  model's slots, in the same order, and every face keeps its own — which matters for printing
+  in several colours.
 
 ## [0.3.7-alpha] - 2026-09-21
 

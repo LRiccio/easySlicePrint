@@ -408,8 +408,15 @@ def perform_cut_steps(context, target_obj, spec, names, out_collection):
     result = []
     for me, name, side in ((mesh_a, names[0], 'A'), (mesh_b, names[1], 'B')):
         me.name = name
-        for m in mats:
-            me.materials.append(m)
+        # the slots travel with the mesh through the booleans; make them the source's
+        # exactly - in place, since clearing the slots would reset every face to the first
+        for i, m in enumerate(mats):
+            if i < len(me.materials):
+                me.materials[i] = m
+            else:
+                me.materials.append(m)
+        while len(me.materials) > len(mats):
+            me.materials.pop()
         obj = bpy.data.objects.new(name, me)
         obj["esp_part"] = True
         obj["esp_side"] = side

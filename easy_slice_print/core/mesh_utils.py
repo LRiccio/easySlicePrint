@@ -256,12 +256,20 @@ def _separate_loose_python(mesh, obj):
 
 
 def join_meshes(meshes, name):
-    """Join several meshes into one NEW mesh (inputs are removed)."""
+    """Join several meshes into one NEW mesh (inputs are removed).
+
+    The pieces are loose shells of one mesh and share its material slots; the joined
+    mesh gets them too. Without slots the next boolean on it clamps every face to the
+    first material, and a multi-colour model comes out in one colour.
+    """
     bm = bmesh.new()
     for me in meshes:
         bm.from_mesh(me)
     out = bmesh_to_mesh(bm, name)
     bm.free()
+    if meshes:
+        for mat in meshes[0].materials:
+            out.materials.append(mat)
     for me in meshes:
         remove_mesh(me)
     return out
