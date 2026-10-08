@@ -21,6 +21,12 @@ All notable changes to this project are documented here. The format follows
   about the connector's origin, so a lobe off to the side — duplicated in edit mode, or a pin of
   a multi-pin layout — got a socket shifted outwards: too wide on the outer side and cutting
   into the pin on the inner one. Every separate piece is now grown about its own centre.
+- **The sidebar works while a cut tool is armed.** Plane, Curve and Freehand cuts used to take
+  every click in the window and show their pencil or knife everywhere, so no button in the
+  sidebar answered until the cut was finished or cancelled. Off the 3D view — sidebar, toolbar,
+  headers, other editors — clicks now go to the interface and the normal cursor comes back;
+  the tool stays armed and picks up again back over the view. A stroke already under way
+  carries on if the mouse leaves the view, and Esc cancels from anywhere.
 
 ## [0.3.7-alpha] - 2026-09-21
 
