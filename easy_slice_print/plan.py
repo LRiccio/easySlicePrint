@@ -1706,6 +1706,58 @@ def spec_for_part(context, rec, spec, part):
     return dataclasses.replace(spec, contacts=[own])
 
 
+def fit_depth(context, rec, spec, part):
+    """`spec` with every preset pin kept shorter than `part` is deep where the pin goes.
+
+    The height a preset pin gets when it is planned is measured on the model, at the
+    middle of the cut face. The part a build actually cuts can be shallower: an earlier
+    cut of the same build may have sliced it thin, or carved a socket right behind this
+    cut face - and a pin as long as the model allowed then runs into that socket, and
+    the pin sitting in it. Measured again on the part, across the whole footprint of
+    the connector, the pin is shortened to leave a wall before anything it would reach.
+    """
+    import dataclasses
+
+    if rec.size_preset == 'CUSTOM':
+        return spec
+    diag = mesh_utils.object_world_diagonal(part)
+    out = []
+    changed = False
+    state = ensure_evaluable(part)
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+        for c in spec.contacts:
+            if not c.add_pin or c.pin_matrix is None:
+                out.append(c)
+                continue
+            z = c.pin_matrix.col[2].xyz
+            h = z.length
+            if h < 1e-12:
+                out.append(c)
+                continue
+            if c.pin_mesh is not None:
+                unit_reach = max((abs(v.co.z) for v in c.pin_mesh.vertices), default=1.0)
+            else:
+                unit_reach = 1.0
+            reach = unit_reach * h
+            depth = None
+            for p in _footprint(c, c.pin_matrix):
+                for d in (z.normalized(), -z.normalized()):
+                    hits = mesh_utils.object_ray_hits(part, p, d, diag * 1e-5, depsgraph, max_dist=reach * 4.0, limit=1)
+                    if hits:
+                        depth = hits[0] if depth is None else min(depth, hits[0])
+            limit = depth_limit_bu(context, rec, depth or 0.0)
+            if limit is None or reach <= limit:
+                out.append(c)
+                continue
+            k = max(limit, DEPTH_MIN_PIN_MM * mm(context)) / reach
+            out.append(dataclasses.replace(c, pin_matrix=c.pin_matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))))
+            changed = True
+    finally:
+        restore_visibility(part, state)
+    return dataclasses.replace(spec, contacts=out) if changed else spec
+
+
 def crossing_threshold(context, rec, spec):
     """How deep in a part the cut face must run for the part to count as crossed."""
     grown = max(

@@ -987,6 +987,8 @@ def test_a_cut_across_earlier_cuts_cuts_every_part():
     the whole section, could land in the other half as a floating pin with no socket.
     """
     print("== a cut across earlier cuts cuts every part")
+    from mathutils.bvhtree import BVHTree
+
     for z, count in ((10.0, 1), (10.0, 3), (0.0, 1)):
         sc = reset_scene()
         s = sc.esp
@@ -1006,6 +1008,13 @@ def test_a_cut_across_earlier_cuts_cuts_every_part():
         check(len(parts) == 4, f"{what}: four parts from two cuts ({len(parts)})")
         for o in parts:
             check(loose_pieces(o.data) == 1, f"{what}: {o.name} is one piece - no floating pin")
+        # no pin reaches into another part - a socket an earlier cut carved, and its pin
+        trees = {
+            o.name: BVHTree.FromPolygons([v.co for v in o.data.vertices], [p.vertices for p in o.data.polygons])
+            for o in parts
+        }
+        clashes = [(a, b) for a in trees for b in trees if a < b and trees[a].overlap(trees[b])]
+        check(not clashes, f"{what}: no part runs into another ({clashes})")
         uppers = [o for o in parts if mesh_utils.mesh_bounds(o.data)[1].z > 29.0]
         with_pins = [o for o in uppers if mesh_utils.mesh_bounds(o.data)[0].z < z - 1.0]
         check(len(with_pins) == 2, f"{what}: both upper parts carry a pin ({[o.name for o in with_pins]})")

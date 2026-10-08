@@ -586,6 +586,7 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
             for target in targets:
                 shared = len(targets) > 1 and len(spec.contacts) == 1
                 part_spec = plan.spec_for_part(context, rec, spec, target) if shared else spec
+                part_spec = plan.fit_depth(context, rec, part_spec, target)
                 stem = target.get("esp_stem", target.name)
                 counter += 2
                 names = (f"{stem}_PART_{counter - 1:03d}", f"{stem}_PART_{counter:03d}")

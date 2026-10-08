@@ -123,6 +123,12 @@ All notable changes to this project are documented here. The format follows
   scene in metres every part came out a thousand times too big.
 - **A cancelled Quick Cut leaves no empty collection.** Pressing Esc before the parts were made
   left an empty `ESP_Built_<model>` collection behind.
+- **Pins of different cuts no longer run into each other.** A preset pin's height was measured
+  on the whole model when the cut was planned. In a build, an earlier cut can leave the part
+  thinner than that, or carve a socket right behind the next cut face: the later pin then ran
+  into that socket and the pin sitting in it. Build now measures the part it is actually
+  cutting, across the whole footprint of the connector, and shortens a preset pin to leave a
+  wall.
 
 ## [0.3.7-alpha] - 2026-09-21
 
