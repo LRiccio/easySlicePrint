@@ -1034,6 +1034,19 @@ def test_an_armed_tool_cleans_up_after_itself():
     check(res == {'CANCELLED'} and second._handle is None, "an unexpected error ends the tool cleanly")
     check(any("boom" in r for r in second.reports), "and says why")
 
+    # Quad View: four views in one area; the tool works in the one under the mouse
+    obj = make_cylinder("Quad")
+    tool = armed_tool(obj)
+    left, right = FakeRegion('WINDOW', 0, 0, 500, 800), FakeRegion('WINDOW', 500, 0, 500, 800)
+    tool.area = FakeArea([left, right])
+    tool.region = left
+    tool._modal(bpy.context, FakeEvent(x=700))
+    check(tool.region is right, "moving into another quadrant moves the tool there")
+    tool.drawing = True
+    tool._modal(bpy.context, FakeEvent(x=200))
+    check(tool.region is right, "but not in the middle of a stroke")
+    tool.end(bpy.context)
+
 
 def test_cut_tools_leave_the_interface_alone():
     """An armed cut tool only takes the clicks that land on the 3D view itself.

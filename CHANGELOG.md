@@ -34,6 +34,10 @@ All notable changes to this project are documented here. The format follows
   that is gone ends the tool with a message, and any unexpected error ends it cleanly.
 - **The Adjust Last Operation panel answers while a cut tool is armed.** It floats over the
   view and was taken for part of it, so a click on it started a stroke.
+- **The cut tools work in every view of Quad View.** They always took the first view of the
+  area, a locked side view, so the other three ignored the mouse — and since clicks off the
+  tool's view reach the interface, a click there selected objects instead. The tool now works
+  in the view it was started from, and moves to whichever view the mouse is in between strokes.
 
 ## [0.3.7-alpha] - 2026-09-21
 

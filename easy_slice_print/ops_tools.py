@@ -91,6 +91,14 @@ def over_view(area, region, event):
     return not any(r.type in UI_REGIONS and r.width > 1 and r.height > 1 and _inside(r, x, y) for r in area.regions)
 
 
+def view_region_under(area, event):
+    """The view the mouse is over: one of the area's WINDOW regions, four in Quad View."""
+    for r in area.regions:
+        if r.type == 'WINDOW' and over_view(area, r, event):
+            return r
+    return None
+
+
 def window_region(area):
     for r in area.regions:
         if r.type == 'WINDOW':
@@ -189,7 +197,12 @@ class CutToolBase(jobs.JobMixin):
             return {'CANCELLED'}
         self.area = context.area
         self.window = context.window
-        self.region = window_region(self.area)
+        # the view the tool was started from, or the one under the mouse; in Quad View the
+        # first WINDOW region is a locked side view, not necessarily the one being used
+        if context.region is not None and context.region.type == 'WINDOW':
+            self.region = context.region
+        else:
+            self.region = view_region_under(self.area, event) or window_region(self.area)
         if self.region is None:
             return {'CANCELLED'}
         self.rv3d = self.region.data
@@ -246,6 +259,15 @@ class CutToolBase(jobs.JobMixin):
         self.loop = []
         self.loop2d = []
         self.view_at_press = None
+
+    def stroke_empty(self):
+        """Nothing drawn yet that is tied to one view's screen space."""
+        return not (
+            getattr(self, "drawing", False)
+            or getattr(self, "start2d", None) is not None
+            or getattr(self, "stroke", None)
+            or getattr(self, "loop", None)
+        )
 
     def end(self, context, quiet=False):
         """Take down everything the tool put up.
@@ -335,7 +357,12 @@ class CutToolBase(jobs.JobMixin):
             self.end(context)
             self.report({'WARNING'}, "The model was deleted or changed by Undo - cut cancelled")
             return {'CANCELLED'}
-        inside = over_view(self.area, self.region, event)
+        under = view_region_under(self.area, event)
+        if under is not None and under.as_pointer() != self.region.as_pointer() and self.stroke_empty():
+            # Quad View: work in whichever view the mouse is in, between strokes
+            self.region = under
+            self.rv3d = under.data
+        inside = under is not None and under.as_pointer() == self.region.as_pointer()
         if not inside and not self.drawing:
             # On the sidebar, a header or another editor: the click belongs to the
             # interface. The tool stays armed and picks up again back over the view.
