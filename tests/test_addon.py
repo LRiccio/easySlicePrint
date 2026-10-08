@@ -851,6 +851,39 @@ def test_clear_plan_after_a_build_keeps_the_parts():
     check(len(lower) == 2, f"Back to Plan leaves the earlier parts alone ({lower})")
 
 
+def test_a_cancelled_build_goes_back_to_the_plan():
+    """Esc on a build leaves no parts behind for the next build to pick up."""
+    print("== a cancelled build goes back to the plan")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    bar = make_slab("Bar", size=(20.0, 20.0, 80.0))
+    plan.add_record(bpy.context, bar, 'STRAIGHT', [section_contact(bar, -15.0)])
+    plan.add_record(bpy.context, bar, 'STRAIGHT', [section_contact(bar, 15.0)])
+    from easy_slice_print.ops_plan import ESP_OT_build
+
+    class Build:
+        build_steps = ESP_OT_build.build_steps
+        _build_cuts = ESP_OT_build._build_cuts
+
+        def report(self, *_args):
+            pass
+
+    steps = Build().build_steps(bpy.context)
+    for label in steps:
+        if label.startswith("cut 2/2"):
+            break
+    steps.close()  # what Esc does to the job
+    parts = [o for o in bpy.data.objects if "_PART_" in o.name]
+    check(not parts, f"no parts are left behind ({[o.name for o in parts]})")
+    check(not any(r.built for r in s.cuts) and not s.built, "nothing is marked built")
+    check(not bar.hide_get(), "the model is back in view")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the next build runs")
+    col = bpy.data.collections[s.built_collection]
+    names = sorted(o.name for o in col.objects)
+    check(names == ["Bar_PART_001", "Bar_PART_002", "Bar_PART_003"], f"and makes exactly its own parts ({names})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1299,6 +1332,7 @@ if __name__ == "__main__":
     test_connector_stays_in_the_material()
     test_pin_fits_the_depth_of_the_part()
     test_clear_plan_after_a_build_keeps_the_parts()
+    test_a_cancelled_build_goes_back_to_the_plan()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

@@ -467,6 +467,21 @@ def _remove_built_parts(context):
         rec.built = False
 
 
+def _undo_partial_build(context, col, made):
+    """Take a build that did not finish back to the plan it started from."""
+    s = context.scene.esp
+    for o in made:
+        mesh_utils.remove_object(o)
+    made.clear()
+    if col is not None and len(col.objects) == 0 and col.name in bpy.data.collections:
+        bpy.data.collections.remove(col)
+    for rec in s.cuts:
+        rec.built = False
+    s.built = False
+    s.built_collection = ""
+    plan.set_plan_hidden(context, False)
+
+
 def _labelled(generator, prefix):
     """Forward a step generator, tagging each label with the cut it belongs to."""
     try:
@@ -525,6 +540,21 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
         col = plan.built_collection(scene, base.name)
         parts = list(sources)
         made = []
+        finished = False
+        try:
+            msg = yield from self._build_cuts(context, base, sources, col, parts, made, t0)
+            finished = True
+            return msg
+        finally:
+            if not finished:
+                # Esc on the job, a cut that failed, anything unexpected: nothing of a
+                # half build may stay. Parts left in the collection were picked up by the
+                # next Build next to its own (it reuses the collection) and exported.
+                _undo_partial_build(context, col, made)
+
+    def _build_cuts(self, context, base, sources, col, parts, made, t0):
+        s = context.scene.esp
+        scene = context.scene
         counter = 0
         done = 0
         skipped = 0
@@ -553,9 +583,6 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
                     skipped += 1
                     self.report({'WARNING'}, f"'{rec.name}' skipped: {e}")
                     continue
-                for o in made:
-                    mesh_utils.remove_object(o)
-                bpy.data.collections.remove(col)
                 raise cutting.CutError(f"'{rec.name}' failed: {e}", e.diagnosis) from e
             parts.remove(target)
             if target not in sources:
@@ -568,7 +595,6 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
             rec.built = True
             done += 1
         if not made:
-            bpy.data.collections.remove(col)
             raise cutting.CutError("Nothing was cut")
         yield "finishing"
         numbers = {}
@@ -626,7 +652,7 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
         s = context.scene.esp
         if state == jobs.CANCELLED:
             s.last_message = "Build cancelled"
-            self.report({'WARNING'}, "Build cancelled - the parts made so far were kept")
+            self.report({'WARNING'}, "Build cancelled - back to the plan")
             return {'CANCELLED'}
         if state == jobs.ERROR:
             self.report({'ERROR'}, str(payload) + self.show_failed())

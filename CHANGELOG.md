@@ -93,6 +93,10 @@ All notable changes to this project are documented here. The format follows
   original again, and Back to Plan deleted the parts Clear Plan had kept. Clearing a built plan
   now works like approving it — the parts stay, the original follows *Keep Original* — and the
   next cut starts a new plan on the part it is drawn on.
+- **A cancelled Build goes back to the plan.** Esc during a Build kept the parts made so far,
+  still marked half built, and the next Build added its own parts next to them in the same
+  collection — duplicated parts that Approve and Export then kept. A Build that is cancelled,
+  or stopped by an error, now removes everything it made and leaves the plan as it was.
 
 ## [0.3.7-alpha] - 2026-09-21
 
