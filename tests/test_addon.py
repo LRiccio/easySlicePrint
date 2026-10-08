@@ -602,7 +602,20 @@ def test_plan_workflow():
     check(len(moved) >= 2, "parts moved apart")
     res = bpy.ops.esp.collapse()
     check(all(o.location.length < 1e-6 for o in col.objects), "collapsed back")
-    # export
+    # export: the default folder is relative to the .blend, and this one was never saved
+    cwd = os.getcwd()
+    os.chdir(tempfile.mkdtemp(prefix="esp_cwd_"))
+    try:
+        s.export_folder = "//ESP_Export/"
+        try:
+            res = bpy.ops.esp.export_parts()
+        except RuntimeError as e:  # an operator that reports an error raises from a script
+            res = {'CANCELLED'} if "Save the .blend" in str(e) else {str(e)}
+        check(
+            res == {'CANCELLED'} and not os.path.exists("ESP_Export"), "an unsaved file does not export next to Blender"
+        )
+    finally:
+        os.chdir(cwd)
     tmp = tempfile.mkdtemp(prefix="esp_export_")
     s.export_folder = tmp
     for fmt in ('STL', 'OBJ', 'FBX'):

@@ -115,6 +115,10 @@ All notable changes to this project are documented here. The format follows
   whole cross-section — could land in that other half as a floating pin with no socket. Every
   part the cut runs through is now cut, and each gets a connector that sits in its own
   material: the one you placed where it is inside the part, an automatic one otherwise.
+- **Export in a file that was never saved no longer writes next to Blender.** The default folder
+  is relative to the .blend; with no .blend it resolved against wherever Blender was started —
+  quietly writing there, or failing with a traceback where that folder is read-only. Export
+  now asks you to save first or pick another folder, and reports a folder it cannot create.
 
 ## [0.3.7-alpha] - 2026-09-21
 

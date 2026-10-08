@@ -101,11 +101,20 @@ class ESP_OT_export(bpy.types.Operator):
         if not parts:
             self.report({'ERROR'}, "No parts to export. Select the parts or build first.")
             return {'CANCELLED'}
-        folder = bpy.path.abspath(s.export_folder)
-        if not folder:
+        if not s.export_folder:
             self.report({'ERROR'}, "Choose an export folder")
             return {'CANCELLED'}
-        os.makedirs(folder, exist_ok=True)
+        if s.export_folder.startswith("//") and not bpy.data.filepath:
+            # relative to a .blend that was never saved: abspath would hand back a relative
+            # path, which lands wherever Blender happened to be started from
+            self.report({'ERROR'}, "Save the .blend first, or choose an export folder that is not relative to it")
+            return {'CANCELLED'}
+        folder = bpy.path.abspath(s.export_folder)
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            self.report({'ERROR'}, f"Cannot create the export folder {folder}: {e.strerror or e}")
+            return {'CANCELLED'}
         unit_mode = plan.pref(context, "unit_mode", 'SCENE')
         bu_to_mm = 1.0 if unit_mode == 'BU_IS_MM' else (context.scene.unit_settings.scale_length or 1.0) * 1000.0
         prev_sel = [o for o in context.selected_objects]
