@@ -80,6 +80,11 @@ All notable changes to this project are documented here. The format follows
   on the first (or an empty) material slot, even on a single-material model. Parts now keep the
   model's slots, in the same order, and every face keeps its own — which matters for printing
   in several colours.
+- **Tapered and Hexagon connectors get the gap the Fit asked for.** The socket was the pin
+  scaled by its widest reach: right for a Cylinder or a Box, but a Hexagon's flats got 87% of
+  the gap and the narrow end of a Tapered pin 61%, so *Snug* fitted almost like *Press*. Every
+  side face of the socket now sits exactly the gap away from the pin, whatever the shape —
+  edited and custom connectors included.
 
 ## [0.3.7-alpha] - 2026-09-21
 

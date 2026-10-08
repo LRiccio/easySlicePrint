@@ -1311,7 +1311,8 @@ def test_several_connectors_on_one_cut():
         for a, b in zip(pins, sockets)
         for gap in (a[0][0] - b[0][0], b[0][1] - a[0][1], a[1][0] - b[1][0], b[1][1] - a[1][1])
     )
-    check(worst < 1e-4, f"every socket clears its own pin by 0.1 mm on every side (off by {worst:.5f})")
+    # a 32-sided pin: its corners move out along their bisectors, a hair more than 0.1
+    check(worst < 1e-3, f"every socket clears its own pin by 0.1 mm on every side (off by {worst:.5f})")
     check(
         all(abs((b[2][1] - a[2][1]) - 0.2) < 1e-4 for a, b in zip(pins, sockets)),
         "and is 0.2 mm deeper at the tip",
@@ -1463,6 +1464,39 @@ def test_materials_survive_the_connectors():
         )
 
 
+def _wall_at_cut(me):
+    """Horizontal distance from the axis to the nearest side face, measured at z = 0."""
+    best = 1e30
+    for p in me.polygons:
+        n = p.normal
+        horizontal = (n.x * n.x + n.y * n.y) ** 0.5
+        if abs(n.z) > 0.95 or horizontal < 1e-6:
+            continue
+        best = min(best, n.dot(p.center) / horizontal)
+    return best
+
+
+def test_every_shape_gets_the_gap_it_asked_for():
+    """The socket clears the pin by the gap on every side face, whatever the shape.
+
+    It used to be the pin scaled about its centre, by its widest reach: right for a
+    cylinder or a box, short on a hexagon's flats (87%) and on the narrow end of a
+    tapered pin (61%), so Snug fitted like Press.
+    """
+    print("== every shape gets the gap it asked for")
+    reset_scene()
+    pm = connectors.connector_matrix(Vector((0, 0, 0)), Vector((0, 0, 1)), 6.0, 7.0)
+    for shape in ('CYLINDER', 'HEX', 'BOX', 'TAPERED'):
+        pin = connectors.connector_mesh(shape, None, pm, "pin_" + shape)
+        socket = connectors.connector_mesh(shape, None, pm, "socket_" + shape, radial_extra=0.2)
+        gap = _wall_at_cut(socket) - _wall_at_cut(pin)
+        check(abs(gap - 0.2) < 0.005, f"{shape}: 0.2 mm between pin and socket wall at the cut ({gap:.3f})")
+        socket = connectors.connector_mesh(shape, None, pm, "socket_" + shape, radial_extra=0.2, tip_extra=0.3)
+        _mn, pin_top = mesh_utils.mesh_bounds(pin)
+        _mn, socket_top = mesh_utils.mesh_bounds(socket)
+        check(abs((socket_top.z - pin_top.z) - 0.3) < 1e-4, f"{shape}: and 0.3 mm deeper at the tip")
+
+
 if __name__ == "__main__":
     t = time.time()
     test_straight_cut_with_pin()
@@ -1490,6 +1524,7 @@ if __name__ == "__main__":
     test_a_connector_off_the_cut_face()
     test_parts_are_named_by_where_their_mass_is()
     test_materials_survive_the_connectors()
+    test_every_shape_gets_the_gap_it_asked_for()
     print(f"\n{len(FAILS)} failure(s) in {time.time() - t:.1f}s")
     for f in FAILS:
         print("  -", f)

@@ -135,38 +135,76 @@ def _vert_islands(bm):
     return out
 
 
+def _side_offset(v, radial_extra):
+    """How far, in x/y, to move vertex `v` so every side face it touches moves out by `radial_extra`.
+
+    The side faces are the ones that are not caps (their normals are not near +/-Z);
+    each one's outward direction in the x/y plane is `m`, and the move `d` is the one
+    with `d . m == radial_extra` for all of them - two faces meeting at a corner make
+    the corner move along its bisector, by more than `radial_extra`, which is exactly
+    what keeps both faces `radial_extra` away from the pin.
+    """
+    ms = []
+    for f in v.link_faces:
+        n = f.normal
+        m = Vector((n.x, n.y))
+        if abs(n.z) > 0.95 or m.length < 1e-6:
+            continue
+        ms.append(m.normalized())
+    if not ms:
+        return None
+    a11 = sum(m.x * m.x for m in ms)
+    a12 = sum(m.x * m.y for m in ms)
+    a22 = sum(m.y * m.y for m in ms)
+    bx = radial_extra * sum(m.x for m in ms)
+    by = radial_extra * sum(m.y for m in ms)
+    det = a11 * a22 - a12 * a12
+    if det < 1e-6 * len(ms) ** 2:
+        # every face it touches faces the same way (a vertex in the middle of a flat side)
+        avg = sum(ms, Vector((0.0, 0.0)))
+        return avg.normalized() * radial_extra if avg.length > 1e-9 else None
+    d = Vector(((a22 * bx - a12 * by) / det, (a11 * by - a12 * bx) / det))
+    if d.length > radial_extra * 4.0:  # a needle-sharp corner: do not shoot it out
+        d = d.normalized() * radial_extra * 4.0
+    return d
+
+
 def _grow_for_socket(bm, scale, radial_extra, tip_extra):
     """Widen the unit shape so the socket clears the pin by `radial_extra` per side.
 
-    The factors come from the shape's own reach on each axis rather than from a
-    presumed 0.5 half width, so an edited connector - one scaled, stretched or grown
-    a second lobe in edit mode - still gets the gap the fit preset asked for.
+    Every side face of the shape is moved out by `radial_extra`, measured at the pin's
+    real size (`scale`), whatever the shape: a cylinder, the flats of a hexagon, the
+    slope of a tapered pin, or a connector edited in edit mode - a lobe stretched, or
+    duplicated off to one side. Scaling the shape about its centre did this only for
+    a shape as wide everywhere as at its widest: a hexagon's flats got 87% of the gap,
+    and a tapered pin, widest at its buried end, got 61% at its tip.
 
-    Every separate piece of the connector (each pin of a multi-pin layout, or a lobe
-    duplicated by hand in edit mode) is grown about its own centre. Growing them all
-    about the common origin would push an off-centre pin's socket outwards: wide
-    enough on the outer side, but cutting into the pin on the inner one.
+    The tip of every separate piece (each pin of a multi-pin layout) moves `tip_extra`
+    further out, so the socket is deeper than the pin.
     """
     if not bm.verts:
         return
     sx, sy, sz = scale
-    bm.verts.index_update()
-    for group in _vert_islands(bm):
-        xs = [v.co.x for v in group]
-        ys = [v.co.y for v in group]
-        cx = (min(xs) + max(xs)) * 0.5
-        cy = (min(ys) + max(ys)) * 0.5
-        hx = max(abs(x - cx) for x in xs)
-        hy = max(abs(y - cy) for y in ys)
-        ztip = max(v.co.z for v in group)
-        fx = (sx * hx + radial_extra) / (sx * hx) if hx > 1e-9 else 1.0
-        fy = (sy * hy + radial_extra) / (sy * hy) if hy > 1e-9 else 1.0
-        fz_tip = (sz * ztip + tip_extra) / (sz * ztip) if ztip > 1e-9 else 1.0
-        for v in group:
-            v.co.x = cx + (v.co.x - cx) * fx
-            v.co.y = cy + (v.co.y - cy) * fy
-            if v.co.z > 0.0:
-                v.co.z *= fz_tip
+    to_real = Matrix.Diagonal((sx, sy, sz, 1.0))
+    bmesh.ops.transform(bm, matrix=to_real, verts=bm.verts)
+    bm.normal_update()
+    if radial_extra > 0.0:
+        moves = [(v, _side_offset(v, radial_extra)) for v in bm.verts]
+        for v, d in moves:
+            if d is not None:
+                v.co.x += d.x
+                v.co.y += d.y
+    if tip_extra > 0.0:
+        bm.verts.index_update()
+        for group in _vert_islands(bm):
+            ztip = max(v.co.z for v in group)
+            if ztip <= 1e-9:
+                continue
+            f = (ztip + tip_extra) / ztip
+            for v in group:
+                if v.co.z > 0.0:
+                    v.co.z *= f
+    bmesh.ops.transform(bm, matrix=to_real.inverted(), verts=bm.verts)
 
 
 def unit_layout_bmesh(shape, custom_obj=None, offsets=None):

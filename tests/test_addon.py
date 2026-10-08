@@ -493,8 +493,12 @@ def test_printer_fit():
         pin = connectors.connector_mesh('CYLINDER', None, matrix, "pin")
         socket = connectors.connector_mesh('CYLINDER', None, matrix, "socket", radial_extra=gap)
         pmn, pmx = mesh_utils.mesh_bounds(pin)
-        smn, smx = mesh_utils.mesh_bounds(socket)
-        widened = (smx.x - smn.x) - (pmx.x - pmn.x)
+
+        # measured wall to wall: the side faces' distance from the axis, not the corners
+        def wall(me):
+            return min(p.normal.dot(p.center) for p in me.polygons if abs(p.normal.z) < 0.5)
+
+        widened = 2.0 * (wall(socket) - wall(pin))
         check(abs(widened - 2.0 * gap) < 1e-4, f"gap {gap:.2f} -> socket {widened:.3f} mm wider (want {2 * gap:.2f})")
         # the pin itself must never change: only the socket opens up
         check(abs((pmx.x - pmn.x) - 6.0) < 1e-4, f"pin stays {pmx.x - pmn.x:.3f} mm across at gap {gap:.2f}")
