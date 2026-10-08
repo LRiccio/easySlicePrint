@@ -571,18 +571,53 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
             plan.refresh_record_frames(context, rec)
             try:
                 spec = plan.record_spec(context, rec, s)
-                target = _pick_target(parts, Vector(rec.anchor))
+                anchor_part = _pick_target(parts, Vector(rec.anchor))
+                targets = [anchor_part]
+                if len(spec.contacts) == 1:
+                    # every part this cut runs through, the one at its anchor first
+                    deep = plan.crossing_threshold(context, rec, spec)
+                    targets += [p for p in plan.parts_crossed(context, parts, spec, deep) if p is not anchor_part]
+            except cutting.CutError as e:
+                targets, spec = [], None
+                failure = e
+            else:
+                failure = None
+            left_whole = []
+            for target in targets:
+                shared = len(targets) > 1 and len(spec.contacts) == 1
+                part_spec = plan.spec_for_part(context, rec, spec, target) if shared else spec
                 stem = target.get("esp_stem", target.name)
                 counter += 2
                 names = (f"{stem}_PART_{counter - 1:03d}", f"{stem}_PART_{counter:03d}")
                 state = plan.ensure_evaluable(target)
                 try:
                     a, b, _secs = yield from _labelled(
-                        cutting.perform_cut_steps(context, target, spec, names, col), prefix
+                        cutting.perform_cut_steps(context, target, part_spec, names, col), prefix
                     )
+                except cutting.CutError as e:
+                    if target is anchor_part:
+                        failure = e
+                        break
+                    left_whole.append(target.name)
+                    continue
                 finally:
                     plan.restore_visibility(target, state)
-            except cutting.CutError as e:
+                parts.remove(target)
+                if target not in sources:
+                    made.remove(target)
+                    mesh_utils.remove_object(target)
+                for o in (a, b):
+                    o["esp_stem"] = stem
+                parts.extend((a, b))
+                made.extend((a, b))
+            if left_whole and failure is None:
+                self.report(
+                    {'WARNING'},
+                    f"'{rec.name}' also crosses {', '.join(left_whole)} but could not cut "
+                    f"{'them' if len(left_whole) > 1 else 'it'}: left whole",
+                )
+            if failure is not None:
+                e = failure
                 if self.failed is None and e.diagnosis is not None:
                     self.failed = (rec.name, e.diagnosis)
                 if s.skip_failed:
@@ -590,14 +625,6 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
                     self.report({'WARNING'}, f"'{rec.name}' skipped: {e}")
                     continue
                 raise cutting.CutError(f"'{rec.name}' failed: {e}", e.diagnosis) from e
-            parts.remove(target)
-            if target not in sources:
-                made.remove(target)
-                mesh_utils.remove_object(target)
-            for o in (a, b):
-                o["esp_stem"] = stem
-            parts.extend((a, b))
-            made.extend((a, b))
             rec.built = True
             done += 1
         if not made:

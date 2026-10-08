@@ -109,6 +109,12 @@ All notable changes to this project are documented here. The format follows
   model after planning made Build fail with "source object no longer exists — Clear the plan",
   which threw every cut away; renaming a part after an Approve made the next build cut the
   wrong object. The plan now follows a renamed model, part or preview.
+- **A cut across earlier cuts cuts every part it crosses.** Build applied each cut to the one
+  part nearest where it was drawn, so a full-width plane under a cut that had already split the
+  model left the other half whole ("3 parts from 2 cuts"), and its connector — placed on the
+  whole cross-section — could land in that other half as a floating pin with no socket. Every
+  part the cut runs through is now cut, and each gets a connector that sits in its own
+  material: the one you placed where it is inside the part, an automatic one otherwise.
 
 ## [0.3.7-alpha] - 2026-09-21
 

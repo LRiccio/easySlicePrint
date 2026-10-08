@@ -1625,6 +1625,96 @@ def record_spec(context, rec, settings, remesh=True):
     )
 
 
+def parts_crossed(context, parts, spec, threshold):
+    """The parts the cut runs through, in the order given.
+
+    An earlier cut of the same build leaves the model in several parts, and a later cut
+    can run across more than one of them - a full width plane under a cut that split the
+    model in two. Each of those has to be cut, not only the one nearest the anchor.
+
+    A part counts when some of the cut face lies in its material deeper than
+    `threshold`. The cutter itself is no test: it reaches past the model on purpose, and
+    across the kerf of an earlier cut it touches the neighbouring part without cutting
+    anything there - every such part would cost a boolean that can only fail.
+    """
+    samples = []
+    for c in spec.contacts:
+        verts, faces = c.shown_patch()
+        samples += section._face_samples(verts, faces, rows=2)
+    out = []
+    for part in parts:
+        if part.type != 'MESH':
+            continue
+        state = ensure_evaluable(part)
+        try:
+            clearance = material_clearance(context, part)
+            if clearance is not None and any(clearance(p) > threshold for p in samples):
+                out.append(part)
+        finally:
+            restore_visibility(part, state)
+    return out
+
+
+def _footprint(c, matrix):
+    """Where the connector meets the cut face: its outline at local z = 0, in world space."""
+    if c.pin_mesh is not None:
+        pts = {(round(v.co.x, 5), round(v.co.y, 5)) for v in c.pin_mesh.vertices}
+    else:
+        bm = connectors.unit_layout_bmesh(c.shape, c.custom_obj, c.offsets)
+        pts = {(round(v.co.x, 5), round(v.co.y, 5)) for v in bm.verts}
+        bm.free()
+    return [matrix @ Vector((x, y, 0.0)) for x, y in pts]
+
+
+def spec_for_part(context, rec, spec, part):
+    """`spec` with a connector that sits in `part`, for a cut that runs through several.
+
+    The record's connector - where the user left it, as they shaped it - is kept when
+    the whole of it is inside this part: every pin, edge to edge, not just its middle. A
+    part it is not in gets a connector of its own: the record's shape and size settings,
+    placed and sized on the stretch of the cut face that is this part's material. When
+    there is no room for one, the part is cut without.
+    """
+    import dataclasses
+
+    c = spec.contacts[0]
+    if not c.add_pin or c.pin_matrix is None:
+        return spec
+    state = ensure_evaluable(part)
+    try:
+        clearance = material_clearance(context, part)
+        if clearance is None or all(clearance(p) > 0.0 for p in _footprint(c, c.pin_matrix)):
+            return spec
+        verts, faces = c.shown_patch()
+        normal = Vector(rec.normal_a)
+        found = section.inscribed_circle(verts, faces, surfaces.patch_normal(verts, faces), clearance=clearance)
+    finally:
+        restore_visibility(part, state)
+    if found is None:
+        own = dataclasses.replace(c, add_pin=False, pin_matrix=None, pin_mesh=None, offsets=None)
+        return dataclasses.replace(spec, contacts=[own])
+    centre, inscribed = found
+    layout = compute_layout(context, rec, verts, faces, True, centre, normal, inscribed, target=part)
+    depth = contact_depth(context, part, centre, normal)
+    w, h = contact_size_bu(context, rec, inscribed, depth)
+    matrix = connectors.connector_matrix(
+        centre, cutting.protrude_direction(normal, rec.pin_side), w * layout.scale, h * layout.scale
+    )
+    own = dataclasses.replace(
+        c, pin_matrix=matrix, pin_mesh=None, offsets=layout.offsets if layout.placed > 1 else None
+    )
+    return dataclasses.replace(spec, contacts=[own])
+
+
+def crossing_threshold(context, rec, spec):
+    """How deep in a part the cut face must run for the part to count as crossed."""
+    grown = max(
+        (float(o.get("esp_grown", 0.0)) for o in record_objects(rec) if o.get("esp_preview") == 'surface'),
+        default=0.0,
+    )
+    return max(2.0 * grown, 2.0 * spec.gap, 0.5 * mm(context))
+
+
 def quick_spec(context, target, contacts):
     """CutSpec for Quick mode straight from the tool output and the scene defaults."""
     settings = context.scene.esp

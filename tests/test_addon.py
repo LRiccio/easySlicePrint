@@ -958,6 +958,38 @@ def test_a_renamed_model_keeps_its_plan():
     check(s.base_object == "Statue_v2", f"the original, not its copy, is followed ({s.base_object})")
 
 
+def test_a_cut_across_earlier_cuts_cuts_every_part():
+    """A later cut runs across every part an earlier cut of the same plan made.
+
+    A full width plane under a cut that had split the model in two used to cut only
+    the half nearest its anchor - "3 parts from 2 cuts" - and its connector, placed on
+    the whole section, could land in the other half as a floating pin with no socket.
+    """
+    print("== a cut across earlier cuts cuts every part")
+    for z, count in ((10.0, 1), (10.0, 3), (0.0, 1)):
+        sc = reset_scene()
+        s = sc.esp
+        s.mode = 'PLAN'
+        s.pin_count = count
+        box = make_slab("Box", size=(40.0, 20.0, 60.0))
+        d1 = plan.ContactData('STRAIGHT')
+        co, no = Vector((0, 0, 0)), Vector((1, 0, 0))
+        d1.plane_co, d1.plane_no, d1.center_hint, d1.anchor = co, no, co, co
+        plan.fill_straight_contact(d1, plan.straight_section(bpy.context, box, co, no, None, co), None)
+        plan.add_record(bpy.context, box, 'STRAIGHT', [d1])
+        plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, z)])
+        what = f"plane at z={z:.0f}, {count} pin(s)"
+        check(bpy.ops.esp.build() == {'FINISHED'}, f"{what}: built")
+        col = bpy.data.collections[s.built_collection]
+        parts = list(col.objects)
+        check(len(parts) == 4, f"{what}: four parts from two cuts ({len(parts)})")
+        for o in parts:
+            check(loose_pieces(o.data) == 1, f"{what}: {o.name} is one piece - no floating pin")
+        uppers = [o for o in parts if mesh_utils.mesh_bounds(o.data)[1].z > 29.0]
+        with_pins = [o for o in uppers if mesh_utils.mesh_bounds(o.data)[0].z < z - 1.0]
+        check(len(with_pins) == 2, f"{what}: both upper parts carry a pin ({[o.name for o in with_pins]})")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1410,6 +1442,7 @@ if __name__ == "__main__":
     test_back_to_plan_gives_every_source_back()
     test_a_built_plan_is_not_edited_blind()
     test_a_renamed_model_keeps_its_plan()
+    test_a_cut_across_earlier_cuts_cuts_every_part()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()
