@@ -41,6 +41,9 @@ class ContactSpec:
     # (a plane's quad, a curve's flat ribbon, a loop's skirted membrane). A failed cut is
     # diagnosed on the cutter but painted on this: it is the mesh on screen, and the one edited.
     preview: tuple | None = None
+    # +1 when the cutter's faces point to side A of this contact, -1 when they point away
+    # (`CutSpec.oriented`): a second surface drawn the other way round faces side B
+    side: int = 1
 
     def shown_patch(self):
         return self.preview if self.preview is not None else (self.verts, self.faces)
@@ -59,6 +62,10 @@ class CutSpec:
     remesh_adaptivity: float = 0.0
     remesh_smooth: bool = False
     diagnose: bool = True  # on a cut that does not split the part, map where it stays joined
+    # Several contacts whose `side` says which of their sides is A. A piece is then put on
+    # its side by the contact it was cut off - not always by the first: a leg cut off by
+    # the second loop of a base split can be anywhere relative to the first one.
+    oriented: bool = False
 
 
 # ----------------------------------------------------------------------------
@@ -236,9 +243,12 @@ def split_mesh_steps(context, mesh, spec):
         work = None
         c0 = spec.contacts[0]
         bvh = mesh_utils.bvh_from_pydata(c0.verts, c0.faces)
+        bvhs = [bvh] + [mesh_utils.bvh_from_pydata(c.verts, c.faces) for c in spec.contacts[1:]]
         side_a, side_b = [], []
         for p in orphans:
-            (side_a if mesh_side(p, bvh, floor=spec.gap * 0.25) > 0 else side_b).append(p)
+            k = cut_off_by(p, bvhs, spec.gap) if spec.oriented else 0
+            vote = mesh_side(p, bvhs[k], floor=spec.gap * 0.25) * spec.contacts[k].side
+            (side_a if vote > 0 else side_b).append(p)
         if not side_a or not side_b:
             found = None
             if spec.diagnose:
@@ -252,6 +262,28 @@ def split_mesh_steps(context, mesh, spec):
         mesh_utils.remove_mesh(work)
         for me in orphans:
             mesh_utils.remove_mesh(me)
+
+
+def cut_off_by(mesh, bvhs, gap, samples=600):
+    """Which contact a separated piece was cut off by: the surface it lies against.
+
+    A piece against several (the base under both legs of a base split) goes by the first.
+    """
+    verts = mesh.vertices
+    n = len(verts)
+    if n == 0 or len(bvhs) < 2:
+        return 0
+    step = max(1, n // samples)
+    nearest = []
+    for bvh in bvhs:
+        best = 1e30
+        for i in range(0, n, step):
+            loc, _nor, _idx, dist = bvh.find_nearest(verts[i].co)
+            if loc is not None and dist < best:
+                best = dist
+        nearest.append(best)
+    k = min(range(len(bvhs)), key=lambda i: nearest[i])
+    return 0 if nearest[0] <= nearest[k] + gap else k
 
 
 def split_mesh(context, mesh, spec):

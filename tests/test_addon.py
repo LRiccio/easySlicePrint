@@ -1020,6 +1020,100 @@ def test_a_cut_across_earlier_cuts_cuts_every_part():
         check(len(with_pins) == 2, f"{what}: both upper parts carry a pin ({[o.name for o in with_pins]})")
 
 
+def make_figure(name="Figure2"):
+    """Two legs standing on a base, one closed mesh: what a Base Split is for."""
+
+    def solid(build, mesh_name):
+        bm = bmesh.new()
+        build(bm)
+        me = bpy.data.meshes.new(mesh_name)
+        bm.to_mesh(me)
+        bm.free()
+        return me
+
+    base = solid(
+        lambda bm: (
+            bmesh.ops.create_cube(bm, size=1.0),
+            bmesh.ops.scale(bm, vec=(60.0, 30.0, 8.0), verts=bm.verts),
+            bmesh.ops.translate(bm, vec=(0.0, 0.0, -3.0), verts=bm.verts),
+        ),
+        name + "_base",
+    )
+    legs = solid(
+        lambda bm: [
+            bmesh.ops.create_cone(
+                bm,
+                cap_ends=True,
+                segments=32,
+                radius1=6.0,
+                radius2=6.0,
+                depth=40.0,
+                matrix=Matrix.Translation((x, 0.0, 20.0)),
+            )
+            for x in (-15.0, 15.0)
+        ],
+        name + "_legs",
+    )
+    me = mesh_utils.boolean_mesh(bpy.context, base, legs, 'UNION', 'EXACT')
+    mesh_utils.remove_mesh(base)
+    mesh_utils.remove_mesh(legs)
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    return obj
+
+
+def plane_section_contact(obj, co, no, span=None):
+    """A plane cut through `co`; `span` limits it to what a stroke ran across, as the tool does."""
+    d = plan.ContactData('STRAIGHT')
+    co, no = Vector(co), Vector(no)
+    d.plane_co, d.plane_no, d.center_hint, d.anchor = co, no, co, co
+    plan.fill_straight_contact(d, plan.straight_section(bpy.context, obj, co, no, span, co), span)
+    return d
+
+
+def test_base_split_preview_points_like_the_build():
+    """Both pins of a Base Split are previewed pointing from the legs into the base.
+
+    The second contact drawn the other way round faces down instead of up; its preview
+    pin used to point into the legs, and only the build turned it the right way.
+    """
+    print("== base split preview points like the build")
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    fig = make_figure()
+    stroke = (Vector((1.0, 0.0, 0.0)), -8.0, 8.0)  # a stroke across one leg
+    d0 = plane_section_contact(fig, (-15.0, 0.0, 3.0), (0.0, 0.0, 1.0), stroke)
+    d1 = plane_section_contact(fig, (15.0, 0.0, 3.0), (0.0, 0.0, -1.0), stroke)  # drawn the other way
+    rec = plan.add_record(bpy.context, fig, 'STRAIGHT', [d0, d1])
+    dirs = [bpy.data.objects[name].matrix_world.col[2].xyz.z for name in (rec.pin_a, rec.pin_b)]
+    check(dirs[0] < 0.0 and dirs[1] < 0.0, f"both preview pins point down into the base ({dirs[0]:.1f}, {dirs[1]:.1f})")
+    check(rec.normal_b[2] > 0.0, "the second contact's + side is the legs, like the first's")
+    plan.refresh_record_frames(bpy.context, rec)
+    pin_b = bpy.data.objects[rec.pin_b]
+    check(pin_b.matrix_world.col[2].xyz.z < 0.0, "and still after the frames are measured again")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the split builds")
+    parts = list(bpy.data.collections[sc.esp.built_collection].objects)
+    legs = [o for o in parts if mesh_utils.mesh_bounds(o.data)[1].z > 30.0]
+    base = [o for o in parts if o not in legs]
+    lo, hi = mesh_utils.mesh_bounds(legs[0].data) if len(legs) == 1 else (Vector(), Vector())
+    check(len(legs) == 1 and hi.x - lo.x > 35.0, "both legs come off as the pin part")
+    check(len(base) == 1 and loose_pieces(base[0].data) == 1, "the base is the other part, whole")
+    stubs = [v.co for v in legs[0].data.vertices if v.co.z < 2.5] if legs else []
+    check(any(v.x < 0 for v in stubs) and any(v.x > 0 for v in stubs), "each leg carries its pin down into the base")
+    bpy.ops.esp.return_to_plan()
+
+    # drawn the same way round, nothing is turned
+    sc = reset_scene()
+    sc.esp.mode = 'PLAN'
+    fig = make_figure("Figure3")
+    d0 = plane_section_contact(fig, (-15.0, 0.0, 3.0), (0.0, 0.0, 1.0), stroke)
+    d1 = plane_section_contact(fig, (15.0, 0.0, 3.0), (0.0, 0.0, 1.0), stroke)
+    rec = plan.add_record(bpy.context, fig, 'STRAIGHT', [d0, d1])
+    check(rec.normal_b[2] > 0.0, "a second contact facing the right way is left as it is")
+    check(bpy.data.objects[rec.pin_b].matrix_world.col[2].xyz.z < 0.0, "and its pin points down")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1478,6 +1572,7 @@ if __name__ == "__main__":
     test_a_built_plan_is_not_edited_blind()
     test_a_renamed_model_keeps_its_plan()
     test_a_cut_across_earlier_cuts_cuts_every_part()
+    test_base_split_preview_points_like_the_build()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

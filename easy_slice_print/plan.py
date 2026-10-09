@@ -1377,6 +1377,7 @@ def add_record(context, target, cut_type, contacts):
             _set_contact_attr(rec, "normal", i, normal)
             _set_contact_attr(rec, "inscribed", i, inscribed)
             _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
+        orient_second_contact(context, target, rec)
         apply_preset(context, rec)
         apply_fit(context, rec)
         for i in range(len(contacts)):
@@ -1474,6 +1475,94 @@ def reset_pins(context, rec):
         _suspend -= 1
 
 
+def faces_away(context, target, patches, c0, n0, c1, n1, cells=40, budget=20000):
+    """True when the second contact's + side is the part without the pins.
+
+    The pins go into side A: the + side of the FIRST contact's surface. The second
+    contact's normal comes from its own surface, which faces whichever way that loop or
+    curve was drawn. Which of its sides is A is a question of what is connected to what:
+    the material is flooded on a grid from just past the second surface, never crossing
+    either surface, until it runs into the first one - and the side of the first it runs
+    into answers it. When the flood from the + side never meets the first surface (a leg
+    that only touches the second), the - side is flooded instead. -> True / False, or
+    None when neither side reaches the first surface.
+    """
+    h = mesh_utils.object_world_diagonal(target) / cells
+    if h <= 0.0:
+        return None
+    clearance = material_clearance(context, target)
+    if clearance is None:
+        return None
+    n0, n1 = Vector(n0).normalized(), Vector(n1).normalized()
+    steps = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+
+    def first_contact_side(start):
+        """+1 / -1: the side of the first surface the material from `start` runs into."""
+        if clearance(start) <= 0.0:
+            return None
+        seen = {(0, 0, 0)}
+        queue = [(0, 0, 0)]
+        head = 0
+        while head < len(queue) and len(seen) < budget:
+            key = queue[head]
+            head += 1
+            here = start + Vector(key) * h
+            for dx, dy, dz in steps:
+                nxt = (key[0] + dx, key[1] + dy, key[2] + dz)
+                if nxt in seen:
+                    continue
+                there = start + Vector(nxt) * h
+                d = there - here
+                hit0 = patches[0].ray_cast(here, d.normalized(), d.length)
+                if hit0[0] is not None:
+                    return 1 if (here - hit0[0]).dot(n0) >= 0.0 else -1
+                if patches[1].ray_cast(here, d.normalized(), d.length)[0] is not None:
+                    continue
+                if clearance(there) <= 0.0:
+                    continue
+                seen.add(nxt)
+                queue.append(nxt)
+        return None
+
+    plus = first_contact_side(Vector(c1) + n1 * h * 0.5)
+    if plus is not None:
+        return plus < 0
+    minus = first_contact_side(Vector(c1) - n1 * h * 0.5)
+    if minus is not None:
+        return minus > 0
+    return None
+
+
+def second_contact_faces_away(context, target, rec):
+    """`faces_away` for a two-contact record, on its preview surfaces."""
+    if contact_count(rec) < 2 or target is None or target.type != 'MESH':
+        return None
+    patches = []
+    for i in range(2):
+        sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+        if sobj is None:
+            return None
+        patches.append(mesh_utils.bvh_from_pydata(*surface_world_patch(sobj)))
+    state = ensure_evaluable(target)
+    try:
+        return faces_away(context, target, patches, rec.center_a, rec.normal_a, rec.center_b, rec.normal_b)
+    finally:
+        restore_visibility(target, state)
+
+
+def orient_second_contact(context, target, rec):
+    """Turn the second contact's normal so its + side is the pin part, like the first's."""
+    if second_contact_faces_away(context, target, rec):
+        rec.normal_b = tuple(-Vector(rec.normal_b))
+
+
+def contact_side(verts, faces, normal):
+    """+1 when the cutter's own faces point to `normal`'s side, -1 when they point away."""
+    if not faces:
+        return 1
+    return 1 if surfaces.patch_normal(verts, faces).dot(Vector(normal)) >= 0.0 else -1
+
+
 def refresh_record_frames(context, rec):
     """Re-estimate centre/normal/size from the (possibly edited) cut surfaces."""
     target = bpy.data.objects.get(rec.target)
@@ -1514,6 +1603,7 @@ def refresh_record_frames(context, rec):
         _set_contact_attr(rec, "inscribed", i, inscribed)
         _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
         sobj["esp_mw"] = flat(sobj.matrix_world)
+    orient_second_contact(context, target, rec)
     on_record_settings_changed(context, rec)
 
 
@@ -1607,11 +1697,13 @@ def record_spec(context, rec, settings, remesh=True):
                 pin_mesh=pin_unit_mesh(pin) if pm is not None else None,
                 regions_skipped=int(sobj.get("esp_skipped", 0)),
                 preview=surface_world_patch(sobj),
+                side=contact_side(verts, faces, _contact_attr(rec, "normal", i)),
             )
         )
     u = mm(context)
     return cutting.CutSpec(
         contacts=contacts,
+        oriented=len(contacts) > 1,
         gap=rec.cut_gap_mm * u,
         clearance=rec.clearance_mm * u,
         tip_extra=(rec.tip_extra_mm * u) if rec.asymmetric else 0.0,
@@ -1772,22 +1864,37 @@ def quick_spec(context, target, contacts):
     settings = context.scene.esp
     apply_fit(context, settings)
     shape, custom = connectors.resolve_shape(settings.shape)
+    frames = [
+        contact_frame(
+            context,
+            target,
+            data.verts,
+            data.faces,
+            data.hit,
+            data.through,
+            data.center_hint,
+            data.is_cut_face,
+            data.grown,
+        )
+        for data in contacts
+    ]
+    if len(contacts) == 2:
+        # the second surface faces the way it was drawn: turned so its + side is the pin
+        # part, as a plan does it (`orient_second_contact`)
+        patches = [mesh_utils.bvh_from_pydata(d.verts, d.faces) for d in contacts]
+        state = ensure_evaluable(target)
+        try:
+            away = faces_away(context, target, patches, frames[0][0], frames[0][1], frames[1][0], frames[1][1])
+        finally:
+            restore_visibility(target, state)
+        if away:
+            centre, normal, inscribed = frames[1]
+            frames[1] = (centre, -Vector(normal), inscribed)
     specs = []
-    for data in contacts:
+    for data, (center, normal, inscribed) in zip(contacts, frames):
         pm = None
         offsets = None
         if settings.add_pin:
-            center, normal, inscribed = contact_frame(
-                context,
-                target,
-                data.verts,
-                data.faces,
-                data.hit,
-                data.through,
-                data.center_hint,
-                data.is_cut_face,
-                data.grown,
-            )
             layout = compute_layout(
                 context,
                 settings,
@@ -1817,11 +1924,13 @@ def quick_spec(context, target, contacts):
                 offsets=offsets,
                 regions_skipped=data.regions_skipped,
                 preview=(data.verts, data.faces),
+                side=contact_side(verts, faces, normal),
             )
         )
     u = mm(context)
     return cutting.CutSpec(
         contacts=specs,
+        oriented=len(specs) > 1,
         gap=settings.cut_gap_mm * u,
         clearance=settings.clearance_mm * u,
         tip_extra=(settings.tip_extra_mm * u) if settings.asymmetric else 0.0,

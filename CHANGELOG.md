@@ -129,6 +129,12 @@ All notable changes to this project are documented here. The format follows
   into that socket and the pin sitting in it. Build now measures the part it is actually
   cutting, across the whole footprint of the connector, and shortens a preset pin to leave a
   wall.
+- **A Base Split shows its second pin the way it will be built.** When the second loop or curve
+  was drawn the other way round, its preview pin pointed into the wrong part; the build turned
+  it, so the preview and the result disagreed. Planning now works out which side of the second
+  surface belongs to the part that carries the pins, by what the material connects, and the
+  preview, the pins and the build all follow it. That also fixes a leg cut off by the second
+  loop being put in the base's part, with its pin left floating.
 
 ## [0.3.7-alpha] - 2026-09-21
 
