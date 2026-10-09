@@ -214,7 +214,7 @@ def _record_enabled_update(self, context):
 class ESP_ExtraPin(bpy.types.PropertyGroup):
     """A connector of a cut on another part it crosses (see `plan.record_regions`)."""
 
-    pin: StringProperty()
+    pin_obj: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
     pin_auto: FloatVectorProperty(size=16, default=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1))
     center: FloatVectorProperty(size=3)
     normal: FloatVectorProperty(size=3, default=(0, 0, 1))
@@ -232,12 +232,17 @@ class ESP_CutRecord(bpy.types.PropertyGroup):
     show: BoolProperty(
         name="Show", default=True, description="Show the cut preview in the viewport", update=_record_show_update
     )
-    target: StringProperty(name="Target", description="Object the cut was drawn on")
+    # The objects a record works with are held by pointer, so renaming one in the
+    # outliner changes nothing. Files saved before kept their names in `target`,
+    # `surface_a` ... instead; `plan.migrate_scene` turns those into these pointers.
+    target_obj: PointerProperty(
+        type=bpy.types.Object, name="Target", description="Object the cut was drawn on", options={'HIDDEN'}
+    )
     two_contact: BoolProperty(default=False)
-    surface_a: StringProperty()
-    surface_b: StringProperty()
-    pin_a: StringProperty()
-    pin_b: StringProperty()
+    surface_obj_a: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
+    surface_obj_b: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
+    pin_obj_a: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
+    pin_obj_b: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
     pin_auto_a: FloatVectorProperty(size=16, default=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1))
     pin_auto_b: FloatVectorProperty(size=16, default=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1))
     center_a: FloatVectorProperty(size=3)
@@ -395,8 +400,8 @@ class ESP_Settings(bpy.types.PropertyGroup):
     cuts: CollectionProperty(type=ESP_CutRecord)
     active_cut: IntProperty(default=-1, update=_active_update)
     built: BoolProperty(default=False)
-    base_object: StringProperty()
-    built_collection: StringProperty()
+    base_obj: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
+    built_col: PointerProperty(type=bpy.types.Collection, options={'HIDDEN'})
     last_message: StringProperty()
 
 

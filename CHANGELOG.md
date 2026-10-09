@@ -113,10 +113,14 @@ All notable changes to this project are documented here. The format follows
   Cut, the cut tools, Select Connector, Reset, Swap, Edit Cut Surface and Refresh still ran: a
   new cut was "added to the plan" with nothing to see, and Select Connector selected a pin no
   one could see. Those buttons now wait for *Back to Plan*, and their tooltip says so.
-- **Renaming the model keeps its plan.** The plan refers to objects by name, so renaming the
+- **Renaming the model keeps its plan.** The plan referred to objects by name, so renaming the
   model after planning made Build fail with "source object no longer exists — Clear the plan",
   which threw every cut away; renaming a part after an Approve made the next build cut the
-  wrong object. The plan now follows a renamed model, part or preview.
+  wrong object. The plan now holds the model, the parts, its previews and the built parts'
+  collection by reference, not by name: renaming or copying any of them changes nothing. A
+  .blend saved with an earlier version is brought over when it is opened (or when the add-on
+  is enabled with it open); one saved with this version loses its plan's links if opened with
+  an earlier one.
 - **A cut across earlier cuts cuts every part it crosses.** Build applied each cut to the one
   part nearest where it was drawn, so a full-width plane under a cut that had already split the
   model left the other half whole ("3 parts from 2 cuts"), and its connector — placed on the

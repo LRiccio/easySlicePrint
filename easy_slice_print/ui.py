@@ -118,14 +118,13 @@ def connector_source(context):
 
 def _layout_note(layout, rec):
     """Say so when the cut face could not take every connector asked for, or only smaller."""
-    names = [rec.pin_a] + ([rec.pin_b] if rec.two_contact else [])
-    for i, name in enumerate(names):
-        pin = bpy.data.objects.get(name)
+    for i in range(plan.contact_count(rec)):
+        pin = plan.pin_of(rec, i)
         if pin is None:
             continue
         placed = int(pin.get("esp_layout_count", 1))
         scale = float(pin.get("esp_layout_scale", 1.0))
-        where = f"Contact {i + 1}: " if len(names) > 1 else ""
+        where = f"Contact {i + 1}: " if rec.two_contact else ""
         if placed < rec.pin_count:
             layout.label(text=f"{where}only {placed} of {rec.pin_count} fit on this cut", icon='ERROR')
         elif scale < 0.999:
@@ -322,20 +321,20 @@ class ESP_PT_pin_adjust(ESPPanel, bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         rec = active_record(context)
-        names = [rec.pin_a] + ([rec.pin_b] if rec.two_contact else [])
-        for i, name in enumerate(names):
-            pin = bpy.data.objects.get(name)
+        count = plan.contact_count(rec)
+        for i in range(count):
+            pin = plan.pin_of(rec, i)
             if pin is None:
                 layout.label(text="No connector preview", icon='ERROR')
                 continue
-            if len(names) > 1:
+            if count > 1:
                 layout.label(text=f"Contact {i + 1}")
             col = layout.column(align=True)
             col.prop(pin, "location")
             col.prop(pin, "rotation_euler", text="Rotation")
             col.prop(pin, "scale")
         for j, e in enumerate(rec.extras):
-            pin = bpy.data.objects.get(e.pin)
+            pin = plan.extra_pin_of(e)
             if pin is None:
                 continue
             layout.label(text=f"Connector on part {j + 2}")

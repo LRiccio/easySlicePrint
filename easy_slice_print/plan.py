@@ -151,8 +151,7 @@ def resolve_target(context):
     obj = context.active_object
     if obj is not None and obj.type == 'MESH' and "esp_preview" not in obj and obj.visible_get():
         return obj
-    settings = context.scene.esp
-    base = bpy.data.objects.get(settings.base_object) if settings.base_object else None
+    base = base_of(context.scene.esp)
     if base is not None and base.type == 'MESH':
         return base
     return None
@@ -189,65 +188,170 @@ def give_back_sources(context):
 
 
 # ----------------------------------------------------------------------------
-# names that survive a rename
+# object references
 # ----------------------------------------------------------------------------
-# The plan refers to objects by name (StringProperty), so renaming the model in the
-# outliner used to break it: Build said the source no longer existed, and the only way
-# on it offered was clearing every cut. Each object the plan refers to carries the name
-# it was referred to by; when that name is gone, the object still carrying it was
-# renamed, and the plan is pointed at its new name. A copy (Shift+D) carries the same
-# name, so the object's session id is kept beside it to tell the original from its
-# copies; when that cannot tell them apart, the reference is left alone rather than
-# pointed at the wrong object.
-REF_KEY = "esp_ref_name"
-REF_UID = "esp_ref_uid"
-_RECORD_FIELDS = ("target", "surface_a", "surface_b", "pin_a", "pin_b")
+# The plan holds the objects it works with by pointer (see `props.ESP_CutRecord`), so
+# a rename in the outliner, of the model or of a preview, changes nothing. A pointer
+# also keeps its object in the file: deleting one in the viewport only unlinks it from
+# its collections. So a referenced object counts only while it is in a collection, and
+# `release_deleted` lets go of those deleted for Blender to drop them.
+def alive(obj):
+    """`obj` if it is still in the scene's collections, else None."""
+    if obj is None:
+        return None
+    try:
+        return obj if obj.users_collection else None
+    except ReferenceError:
+        return None
 
 
-def remember(obj):
-    """Mark `obj` as referred to by the plan under its current name."""
-    if obj is not None:
-        obj[REF_KEY] = obj.name
-        obj[REF_UID] = getattr(obj, "session_uid", 0)
+def collection_alive(col):
+    """`col` if a scene still holds it, else None (the built parts' collection)."""
+    if col is None:
+        return None
+    try:
+        for sc in bpy.data.scenes:
+            if col in sc.collection.children_recursive:
+                return col
+    except ReferenceError:
+        pass
+    return None
 
 
-def heal_names(scene):
-    """Follow renamed objects: re-point every plan reference whose name is gone. -> changed"""
+def base_of(settings):
+    return alive(settings.base_obj)
+
+
+def built_col_of(settings):
+    return collection_alive(settings.built_col)
+
+
+def target_of(rec):
+    return alive(rec.target_obj)
+
+
+def record_target(context, rec):
+    """The object `rec` was drawn on, else the plan's base."""
+    return target_of(rec) or base_of(context.scene.esp)
+
+
+def surface_of(rec, i):
+    return alive(getattr(rec, f"surface_obj_{'ab'[i]}"))
+
+
+def pin_of(rec, i):
+    return alive(getattr(rec, f"pin_obj_{'ab'[i]}"))
+
+
+def extra_pin_of(e):
+    return alive(e.pin_obj)
+
+
+REF_FIELDS = ("target_obj", "surface_obj_a", "surface_obj_b", "pin_obj_a", "pin_obj_b")
+
+
+def _ref_fields(settings):
+    """(owner, pointer attribute) of every object reference in the plan."""
+    yield settings, "base_obj"
+    for rec in settings.cuts:
+        for f in REF_FIELDS:
+            yield rec, f
+        for e in rec.extras:
+            yield e, "pin_obj"
+
+
+def release_deleted(settings):
+    """Let go of every object deleted from the scene, so the file does not keep it."""
+    for owner, attr in _ref_fields(settings):
+        obj = getattr(owner, attr)
+        if obj is not None and alive(obj) is None:
+            setattr(owner, attr, None)
+    col = settings.built_col
+    if col is not None and collection_alive(col) is None:
+        settings.built_col = None
+
+
+# Files saved before the pointers kept a name in a string property; the name of each
+# one, and the pointer it becomes. The strings stay in the file as plain ID properties
+# (nothing declares them any more), so they are read, and dropped, from there.
+LEGACY_RECORD = {
+    "target": "target_obj",
+    "surface_a": "surface_obj_a",
+    "surface_b": "surface_obj_b",
+    "pin_a": "pin_obj_a",
+    "pin_b": "pin_obj_b",
+}
+# the custom properties the name-based plan tagged objects with to follow a rename
+LEGACY_OBJECT_TAGS = ("esp_ref_name", "esp_ref_uid")
+
+
+def _take_legacy(owner, key):
+    """Pop the old string property `key` off `owner`. -> the name, or None"""
+    if key not in owner:
+        return None
+    value = owner.get(key)
+    del owner[key]
+    return value if isinstance(value, str) and value else None
+
+
+def _adopt(owner, attr, data, name):
+    if name and getattr(owner, attr) is None:
+        found = data.get(name)
+        if found is not None:
+            setattr(owner, attr, found)
+
+
+def migrate_scene(scene):
+    """Turn the object names a file saved before the pointers into pointers. -> changed"""
     settings = getattr(scene, "esp", None)
     if settings is None:
         return False
     objects = bpy.data.objects
-    names = [settings.base_object] + [getattr(r, f) for r in settings.cuts for f in _RECORD_FIELDS]
-    names += [e.pin for r in settings.cuts for e in r.extras]
-    missing = {n for n in names if n and objects.get(n) is None}
-    if not missing:
-        return False
-    candidates = {}
-    for obj in objects:
-        old = obj.get(REF_KEY)
-        if old in missing and old != obj.name:
-            candidates.setdefault(old, []).append(obj)
-    renamed = {}
-    for old, objs in candidates.items():
-        if len(objs) > 1:  # the original and its copies: the original kept its session id
-            objs = [o for o in objs if o.get(REF_UID) == getattr(o, "session_uid", -1)]
-        if len(objs) == 1:
-            renamed[old] = objs[0]
-    if not renamed:
-        return False
-    if settings.base_object in renamed:
-        settings.base_object = renamed[settings.base_object].name
+    changed = False
+    for key, attr, data in (
+        ("base_object", "base_obj", objects),
+        ("built_collection", "built_col", bpy.data.collections),
+    ):
+        if key in settings:
+            _adopt(settings, attr, data, _take_legacy(settings, key))
+            changed = True
     for rec in settings.cuts:
-        for f in _RECORD_FIELDS:
-            old = getattr(rec, f)
-            if old in renamed:
-                setattr(rec, f, renamed[old].name)
+        for key, attr in LEGACY_RECORD.items():
+            if key in rec:
+                _adopt(rec, attr, objects, _take_legacy(rec, key))
+                changed = True
         for e in rec.extras:
-            if e.pin in renamed:
-                e.pin = renamed[e.pin].name
-    for obj in renamed.values():
-        remember(obj)
-    return True
+            if "pin" in e:
+                _adopt(e, "pin_obj", objects, _take_legacy(e, "pin"))
+                changed = True
+    return changed
+
+
+def migrate_file():
+    """Bring every scene of the open file to object pointers. -> changed"""
+    changed = False
+    for scene in bpy.data.scenes:
+        changed = migrate_scene(scene) or changed
+    for obj in bpy.data.objects:
+        for key in LEGACY_OBJECT_TAGS:
+            if key in obj:
+                del obj[key]
+                changed = True
+    return changed
+
+
+@persistent
+def load_post_handler(_filepath):
+    migrate_file()
+
+
+def _migrate_after_register():
+    """The add-on enabled with a file already open: no load handler runs for it."""
+    try:
+        migrate_file()
+    except Exception:
+        pass
+    return None
 
 
 def plan_sources(context):
@@ -259,13 +363,13 @@ def plan_sources(context):
     """
     settings = context.scene.esp
     out = []
-    base = bpy.data.objects.get(settings.base_object) if settings.base_object else None
+    base = base_of(settings)
     if base is not None and base.type == 'MESH':
         out.append(base)
     for rec in settings.cuts:
         if not rec.enabled:
             continue
-        obj = bpy.data.objects.get(rec.target) if rec.target else None
+        obj = target_of(rec)
         if obj is not None and obj.type == 'MESH' and obj not in out:
             out.append(obj)
     return out
@@ -428,7 +532,6 @@ def _preview_object(scene, name, mesh, kind, color, mat_name):
     obj.hide_render = True
     obj.color = color
     obj["esp_preview"] = kind
-    remember(obj)
     mesh.materials.append(_material(mat_name, color))
     return obj
 
@@ -1265,7 +1368,7 @@ def record_layout(context, rec, i):
     """The layout for contact `i` of a cut record, measured on its preview surface."""
     if max(1, int(rec.pin_count)) <= 1 or not rec.add_pin:
         return PinLayout(asked=max(1, int(rec.pin_count)))
-    sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+    sobj = surface_of(rec, i)
     if sobj is None:
         return PinLayout(asked=rec.pin_count)
     verts, faces = surface_world_patch(sobj)
@@ -1278,7 +1381,7 @@ def record_layout(context, rec, i):
         _contact_attr(rec, "center", i),
         _contact_attr(rec, "normal", i),
         _contact_attr(rec, "inscribed", i),
-        target=bpy.data.objects.get(rec.target) or bpy.data.objects.get(context.scene.esp.base_object),
+        target=record_target(context, rec),
         grown=float(sobj.get("esp_grown", 0.0)),
         region=_main_region(context, rec, i),
     )
@@ -1344,13 +1447,18 @@ def contact_count(rec):
     return 2 if rec.two_contact else 1
 
 
+def record_pins(rec):
+    """Every connector preview of `rec` still in the scene: its own, then the extras."""
+    pins = (rec.pin_obj_a, rec.pin_obj_b, *(e.pin_obj for e in rec.extras))
+    return [p for p in map(alive, pins) if p is not None]
+
+
 def record_objects(rec):
+    """Every preview object `rec` owns - also one deleted from the scene but still held."""
     out = []
-    for name in (rec.surface_a, rec.surface_b, rec.pin_a, rec.pin_b, *(e.pin for e in rec.extras)):
-        if name:
-            obj = bpy.data.objects.get(name)
-            if obj is not None:
-                out.append(obj)
+    for obj in (rec.surface_obj_a, rec.surface_obj_b, rec.pin_obj_a, rec.pin_obj_b, *(e.pin_obj for e in rec.extras)):
+        if obj is not None and obj not in out:
+            out.append(obj)
     return out
 
 
@@ -1370,23 +1478,21 @@ def add_record(context, target, cut_type, contacts):
     settings = context.scene.esp
     _suspend += 1
     try:
-        if not settings.base_object or bpy.data.objects.get(settings.base_object) is None:
+        if base_of(settings) is None:
             # the object under the cut is the plan's source, even when it is a part of
             # an earlier build: its `esp_base` points at the model before those cuts,
             # and rooting the plan there would undo every cut already approved
-            settings.base_object = target.name
-            remember(target)
+            settings.base_obj = target
         rec = settings.cuts.add()
         rec.name = unique_record_name(settings, "Base Split" if len(contacts) == 2 else PREFIX[cut_type])
         rec.cut_type = cut_type
-        rec.target = target.name
-        remember(target)
+        rec.target_obj = target
         rec.two_contact = len(contacts) == 2
         active = settings.cuts[settings.active_cut] if 0 <= settings.active_cut < len(settings.cuts) - 1 else None
         copy_connector_props(active if active is not None else settings, rec)
         for i, data in enumerate(contacts):
             sobj = create_surface_object(context, f"ESP_Surface_{rec.name}_{'AB'[i]}", data, target)
-            _set_contact_attr(rec, "surface", i, sobj.name)
+            _set_contact_attr(rec, "surface_obj", i, sobj)
             center, normal, inscribed = contact_frame(
                 context,
                 target,
@@ -1411,7 +1517,7 @@ def add_record(context, target, cut_type, contacts):
             layout = record_layout(context, rec, i)
             matrix = auto_pin_matrix(context, rec, i, layout)
             pin = create_pin_object(context, f"ESP_Pin_{rec.name}_{'AB'[i]}", rec.shape, matrix, layout)
-            _set_contact_attr(rec, "pin", i, pin.name)
+            _set_contact_attr(rec, "pin_obj", i, pin)
             _set_contact_attr(rec, "pin_auto", i, flat(matrix))
             pin.hide_viewport = not rec.add_pin
         sync_extra_pins(context, rec, extras, target)
@@ -1430,7 +1536,7 @@ def on_record_settings_changed(context, rec):
         apply_preset(context, rec)
         apply_fit(context, rec)
         for i in range(contact_count(rec)):
-            pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+            pin = pin_of(rec, i)
             if pin is None:
                 continue
             layout = record_layout(context, rec, i)
@@ -1477,7 +1583,7 @@ def user_delta(auto, current):
 
 
 def user_moved_pin(rec, i):
-    pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+    pin = pin_of(rec, i)
     if pin is None:
         return False
     return not _is_identity(user_delta(unflat(_contact_attr(rec, "pin_auto", i)), pin.matrix_basis))
@@ -1493,7 +1599,7 @@ def reset_pins(context, rec):
     _suspend += 1
     try:
         for i in range(contact_count(rec)):
-            pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+            pin = pin_of(rec, i)
             if pin is None:
                 continue
             layout = record_layout(context, rec, i)
@@ -1571,7 +1677,7 @@ def second_contact_faces_away(context, target, rec):
         return None
     patches = []
     for i in range(2):
-        sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+        sobj = surface_of(rec, i)
         if sobj is None:
             return None
         patches.append(mesh_utils.bvh_from_pydata(*surface_world_patch(sobj)))
@@ -1712,9 +1818,8 @@ def record_regions(context, rec):
     if contact_count(rec) != 1:
         return None
     settings = context.scene.esp
-    objects = bpy.data.objects
-    sobj = objects.get(rec.surface_a)
-    target = objects.get(rec.target) or objects.get(settings.base_object)
+    sobj = surface_of(rec, 0)
+    target = record_target(context, rec)
     if sobj is None or target is None or target.type != 'MESH' or not len(sobj.data.polygons):
         return None
     u = mm(context)
@@ -1727,14 +1832,13 @@ def record_regions(context, rec):
         if not other.enabled:
             continue
         for i in range(contact_count(other)):
-            o = objects.get(_contact_attr(other, "surface", i))
+            o = surface_of(other, i)
             if o is not None and len(o.data.polygons):
                 surfaces_before.append((o, other.cut_gap_mm * u * 0.5))
         if other.add_pin:
             socket = other.clearance_mm * u + (other.tip_extra_mm * u if other.asymmetric else 0.0)
-            for name in (other.pin_a, other.pin_b, *(e.pin for e in other.extras)):
-                pin = objects.get(name) if name else None
-                if pin is not None and len(pin.data.polygons):
+            for pin in record_pins(other):
+                if len(pin.data.polygons):
                     pins_before.append((pin, socket))
     if not surfaces_before:
         return None
@@ -1804,7 +1908,7 @@ def place_by_region(context, rec, target):
     if regions is None:
         rec.region = -1
         return []
-    sobj = bpy.data.objects.get(rec.surface_a)
+    sobj = surface_of(rec, 0)
     verts, faces = surface_world_patch(sobj)
     face_normal = surfaces.patch_normal(verts, faces)
     normal = Vector(rec.normal_a)
@@ -1831,7 +1935,7 @@ def place_by_region(context, rec, target):
 
 def _extra_layout(context, rec, e):
     regions = record_regions(context, rec)
-    sobj = bpy.data.objects.get(rec.surface_a)
+    sobj = surface_of(rec, 0)
     if regions is None or sobj is None or max(1, int(rec.pin_count)) <= 1 or not rec.add_pin:
         return PinLayout(asked=max(1, int(rec.pin_count)))
     verts, faces = surface_world_patch(sobj)
@@ -1852,10 +1956,10 @@ def _update_extra_pin(context, rec, j, reset=False):
     e = rec.extras[j]
     layout = _extra_layout(context, rec, e)
     auto = _extra_matrix(context, rec, e, layout)
-    pin = bpy.data.objects.get(e.pin)
+    pin = extra_pin_of(e)
     if pin is None:
         pin = create_pin_object(context, f"ESP_Pin_{rec.name}_P{j + 2}", rec.shape, auto, layout)
-        e.pin = pin.name
+        e.pin_obj = pin
     else:
         if reset or pin_needs_rebuild(pin, rec.shape, layout):
             update_pin_mesh(pin, rec.shape, layout)
@@ -1873,8 +1977,8 @@ def _update_extra_pin(context, rec, j, reset=False):
 def sync_extra_pins(context, rec, items, target):
     """One extra connector per item of `place_by_region`, previews made or dropped to match."""
     while len(rec.extras) > len(items):
-        pin = bpy.data.objects.get(rec.extras[-1].pin)
-        if pin is not None:
+        pin = rec.extras[-1].pin_obj
+        if pin is not None:  # one deleted by hand but still held goes too
             mesh_utils.remove_object(pin)
         rec.extras.remove(len(rec.extras) - 1)
     while len(rec.extras) < len(items):
@@ -1910,14 +2014,11 @@ def refresh_cuts_after(context, rec):
 
 def refresh_record_frames(context, rec, rebuild=True):
     """Re-estimate centre/normal/size from the (possibly edited) cut surfaces."""
-    target = bpy.data.objects.get(rec.target)
-    base = bpy.data.objects.get(context.scene.esp.base_object)
-    if target is None:
-        target = base
+    target = record_target(context, rec)
     if target is None:
         return
     for i in range(contact_count(rec)):
-        sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+        sobj = surface_of(rec, i)
         if sobj is None:
             continue
         if rebuild and sobj.get("esp_kind") == 'STRAIGHT':
@@ -1966,14 +2067,14 @@ def _reanchor_plane(verts, faces, hit, through, hint):
 
 def set_record_visibility(rec, show):
     for i in range(contact_count(rec)):
-        s = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+        s = surface_of(rec, i)
         if s is not None:
             s.hide_viewport = not show
-        p = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+        p = pin_of(rec, i)
         if p is not None:
             p.hide_viewport = not (show and rec.add_pin)
     for e in rec.extras:
-        p = bpy.data.objects.get(e.pin)
+        p = extra_pin_of(e)
         if p is not None:
             p.hide_viewport = not (show and rec.add_pin)
 
@@ -2036,11 +2137,11 @@ def record_spec(context, rec, settings, remesh=True):
     contacts = []
     shape, custom = connectors.resolve_shape(rec.shape)
     for i in range(contact_count(rec)):
-        sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
+        sobj = surface_of(rec, i)
         if sobj is None:
             raise cutting.CutError(f"Preview surface of '{rec.name}' is missing")
         verts, faces = cutter_world_patch(sobj)
-        pin = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+        pin = pin_of(rec, i)
         pm = pin.matrix_basis.copy() if (rec.add_pin and pin is not None) else None
         contacts.append(
             cutting.ContactSpec(
@@ -2134,7 +2235,7 @@ def spec_for_part(context, rec, spec, part):
     # the record's connector first, then those it shows on the other parts it crosses
     candidates = [c]
     for e in rec.extras:
-        pin = bpy.data.objects.get(e.pin)
+        pin = extra_pin_of(e)
         mesh = pin_unit_mesh(pin)
         if mesh is not None:
             candidates.append(dataclasses.replace(c, pin_matrix=pin.matrix_basis.copy(), pin_mesh=mesh, offsets=None))
@@ -2244,7 +2345,7 @@ def fit_preview(context, rec, matrix, layout, regions=None):
     """
     if rec.size_preset == 'CUSTOM' or not rec.add_pin:
         return matrix
-    target = bpy.data.objects.get(rec.target) or bpy.data.objects.get(bpy.context.scene.esp.base_object)
+    target = record_target(bpy.context, rec)
     if target is None or target.type != 'MESH':
         return matrix
     shape, custom = connectors.resolve_shape(rec.shape)
@@ -2384,7 +2485,7 @@ def _refresh_dirty():
     _dirty = {}
     moved = False
     for rec in scene.esp.cuts:
-        if rec.surface_a in names or rec.surface_b in names:
+        if any(o is not None and o.name in names for o in (surface_of(rec, 0), surface_of(rec, 1))):
             moved = True
             try:
                 refresh_record_frames(bpy.context, rec)
@@ -2402,15 +2503,16 @@ def _refresh_dirty():
 @persistent
 def depsgraph_handler(scene, depsgraph):
     settings = getattr(scene, "esp", None)
-    if settings is None or not len(settings.cuts):
+    if settings is None:
         return
-    heal_names(scene)  # a rename in the outliner ends up here too
+    migrate_scene(scene)  # a scene appended from an older file, say
+    release_deleted(settings)  # a preview, or the model, deleted in the viewport
+    if not len(settings.cuts):
+        return
     changed = False
     for rec in settings.cuts:
-        for name in (rec.surface_a, rec.surface_b):
-            if not name:
-                continue
-            obj = bpy.data.objects.get(name)
+        for i in range(2):
+            obj = surface_of(rec, i)
             if obj is None:
                 continue
             cur = flat(obj.matrix_basis)
@@ -2418,16 +2520,13 @@ def depsgraph_handler(scene, depsgraph):
             if old is None or any(abs(a - b) > 1e-6 for a, b in zip(cur, old)):
                 obj["esp_mw"] = cur
                 if old is not None:
-                    _dirty[name] = tuple(cur)
+                    _dirty[obj.name] = tuple(cur)
                     changed = True
     if changed and not bpy.app.timers.is_registered(_refresh_dirty):
         bpy.app.timers.register(_refresh_dirty, first_interval=0.05)
     # a connector moved by hand: the cuts after it keep their own clear of its socket
     for rec in settings.cuts:
-        for name in (rec.pin_a, rec.pin_b, *(e.pin for e in rec.extras)):
-            obj = bpy.data.objects.get(name) if name else None
-            if obj is None:
-                continue
+        for obj in record_pins(rec):
             cur = flat(obj.matrix_basis)
             old = obj.get("esp_mw")
             if old is None or any(abs(a - b) > 1e-6 for a, b in zip(cur, old)):
@@ -2483,12 +2582,20 @@ def _refresh_pending_after():
 def register():
     if depsgraph_handler not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(depsgraph_handler)
+    if load_post_handler not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(load_post_handler)
+    # bpy.data is out of reach while add-ons register: the file open now is brought
+    # over as soon as Blender is running
+    if not bpy.app.timers.is_registered(_migrate_after_register):
+        bpy.app.timers.register(_migrate_after_register, first_interval=0.0)
 
 
 def unregister():
     if depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(depsgraph_handler)
-    for timer in (_refresh_dirty, _refresh_pending_after):
+    if load_post_handler in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(load_post_handler)
+    for timer in (_refresh_dirty, _refresh_pending_after, _migrate_after_register):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
     section.free_cache()

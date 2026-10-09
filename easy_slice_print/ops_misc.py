@@ -20,7 +20,7 @@ def part_objects(context):
     if sel:
         return sel
     s = context.scene.esp
-    col = bpy.data.collections.get(s.built_collection) if s.built_collection else None
+    col = plan.built_col_of(s)
     if col is not None and len(col.objects):
         return [o for o in col.objects if o.type == 'MESH']
     parts = [o for o in context.scene.objects if o.type == 'MESH' and o.get("esp_part") and o.visible_get()]

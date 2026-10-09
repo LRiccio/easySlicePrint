@@ -121,8 +121,7 @@ class ESP_OT_select_pin(bpy.types.Operator):
 
     def execute(self, context):
         rec = active_record(context)
-        name = rec.pin_a if self.index == 0 else rec.pin_b
-        pin = bpy.data.objects.get(name)
+        pin = plan.pin_of(rec, 1 if self.index == 1 else 0)
         if pin is None:
             self.report({'WARNING'}, "This cut has no connector preview")
             return {'CANCELLED'}
@@ -159,8 +158,7 @@ def edit_surface_of(rec, index):
     point by point. Each contact of a two-contact cut has a surface of its own, and
     is edited on its own.
     """
-    name = rec.surface_b if index == 1 and rec.two_contact else rec.surface_a
-    sobj = bpy.data.objects.get(name) if name else None
+    sobj = plan.surface_of(rec, 1 if index == 1 and rec.two_contact else 0)
     if sobj is None:
         return None, False
     return sobj, sobj.get("esp_kind", 'STRAIGHT') != 'STRAIGHT'
@@ -210,7 +208,7 @@ class ESP_OT_edit_surface(bpy.types.Operator):
         self.sobj = sobj
         self.kind = sobj.get("esp_kind", 'CURVED')
         self.closed = self.kind == 'FREEHAND'
-        self.target = bpy.data.objects.get(rec.target) or bpy.data.objects.get(context.scene.esp.base_object)
+        self.target = plan.record_target(context, rec)
         self.mw = sobj.matrix_world.copy()
         self.inv = self.mw.inverted_safe()
         self.points = plan.surface_points(sobj)
@@ -320,11 +318,10 @@ class ESP_OT_edit_surface(bpy.types.Operator):
     def surface_alive(self):
         """False once the surface or its record is gone - deleted, or undone from the menu."""
         try:
-            self.sobj.name  # noqa: B018 - touching it is the test
-            self.rec.name  # noqa: B018
+            self.rec.name  # noqa: B018 - touching it is the test
         except ReferenceError:
             return False
-        return True
+        return plan.alive(self.sobj) is not None
 
     # -- modal ------------------------------------------------------------------
     def modal(self, context, event):
@@ -460,12 +457,12 @@ class ESP_OT_edit_surface(bpy.types.Operator):
 # ----------------------------------------------------------------------------
 def _remove_built_parts(context):
     s = context.scene.esp
-    col = bpy.data.collections.get(s.built_collection) if s.built_collection else None
+    col = plan.built_col_of(s)
     if col is not None:
         for obj in list(col.objects):
             mesh_utils.remove_object(obj)
         bpy.data.collections.remove(col)
-    s.built_collection = ""
+    s.built_col = None
     s.built = False
     s.exploded = False
     for rec in s.cuts:
@@ -483,7 +480,7 @@ def _undo_partial_build(context, col, made):
     for rec in s.cuts:
         rec.built = False
     s.built = False
-    s.built_collection = ""
+    s.built_col = None
     plan.set_plan_hidden(context, False)
 
 
@@ -530,8 +527,8 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
         s = context.scene.esp
         scene = context.scene
         t0 = time.time()
-        plan.heal_names(scene)
-        base = bpy.data.objects.get(s.base_object)
+        plan.migrate_scene(scene)
+        base = plan.base_of(s)
         if base is None:
             raise cutting.CutError("The plan's source object no longer exists. Clear the plan.")
         overlay.clear()
@@ -645,7 +642,7 @@ class ESP_OT_build(jobs.JobMixin, bpy.types.Operator):
                 plan.stash_built_source(scene, src)
         plan.set_plan_hidden(context, True)
         s.built = True
-        s.built_collection = col.name
+        s.built_col = col
         s.exploded = False
         for o in context.view_layer.objects:
             o.select_set(False)
@@ -748,7 +745,7 @@ class ESP_OT_approve(bpy.types.Operator):
         s = context.scene.esp
         # only what this build actually consumed - a source it cut is in the backup
         consumed = plan.build_stashed(context)
-        col = bpy.data.collections.get(s.built_collection) if s.built_collection else None
+        col = plan.built_col_of(s)
         parts = [o for o in col.objects if o.type == 'MESH'] if col is not None else []
         # a built cut is done: its part exists, cutting it again would only split the part
         for i in reversed(range(len(s.cuts))):
@@ -757,11 +754,9 @@ class ESP_OT_approve(bpy.types.Operator):
         # what was not built (not Ready, or skipped) waits on the part it was drawn over:
         # its source is going to the backup or away, and the next build must cut the part
         for rec in s.cuts:
-            target = bpy.data.objects.get(rec.target) if rec.target else None
+            target = plan.target_of(rec)
             if parts and (target is None or target in consumed):
-                picked = _pick_target(parts, Vector(rec.anchor))
-                rec.target = picked.name
-                plan.remember(picked)
+                rec.target_obj = _pick_target(parts, Vector(rec.anchor))
                 plan.refresh_record_frames(context, rec)
         if not s.keep_original:
             for o in consumed:
@@ -770,8 +765,8 @@ class ESP_OT_approve(bpy.types.Operator):
             for o in consumed:  # approved: it stays in the backup for good, no build's to give back
                 del o[plan.BUILD_STASH]
         s.built = False
-        s.base_object = s.cuts[0].target if len(s.cuts) else ""
-        s.built_collection = ""
+        s.base_obj = s.cuts[0].target_obj if len(s.cuts) else None
+        s.built_col = None
         if len(s.cuts):
             plan.set_plan_hidden(context, False)
         else:
@@ -818,9 +813,9 @@ class ESP_OT_clear_plan(bpy.types.Operator):
         # in the backup rooted the next plan there: its build cut the hidden original
         # again instead of the part the cut was drawn on, and Back to Plan then deleted
         # the parts this button had promised to keep.
-        s.base_object = ""
+        s.base_obj = None
         s.built = False
-        s.built_collection = ""
+        s.built_col = None
         overlay.clear()
         s.last_message = "Plan cleared"
         return {'FINISHED'}

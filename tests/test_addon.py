@@ -268,7 +268,7 @@ def test_plane_section_preview():
     d.anchor = ref.copy()
     rec = plan.add_record(bpy.context, legs, 'STRAIGHT', [d])
 
-    sobj = bpy.data.objects.get(rec.surface_a)
+    sobj = rec.surface_obj_a
     check(sobj is not None, "the preview surface was created")
     mn, mx = world_bounds(sobj)
     check(abs((mx.x - mn.x) - 20.2) < 0.6, f"preview is one leg wide, not the whole model ({mx.x - mn.x:.1f} ~ 20)")
@@ -444,7 +444,7 @@ def test_freehand_cut_lands_on_the_loop():
     ctx = bpy.context
     plan.add_record(ctx, obj, 'FREEHAND', [freehand_contact(obj)])
     rec = s.cuts[-1]
-    sobj = bpy.data.objects.get(rec.surface_a)
+    sobj = rec.surface_obj_a
     check(sobj is not None and int(sobj.get("esp_cutter_n", 0)) == 3, "the plan stores the cutter triangulated")
     shown = plan.surface_world_patch(sobj)
     cut_v, cut_f = plan.cutter_world_patch(sobj)
@@ -457,7 +457,7 @@ def test_freehand_cut_lands_on_the_loop():
     again = plan.cutter_world_patch(sobj)
     check(len(again[0]) == len(cut_v), "a rebuild keeps the skirt on the cutter")
     res = bpy.ops.esp.build()
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(res == {'FINISHED'} and col is not None and len(col.objects) == 2, "the plan builds two parts from it")
     if col is not None and len(col.objects) == 2:
         lower = min(col.objects, key=lambda o: world_bounds(o)[0].z)
@@ -539,13 +539,13 @@ def test_plan_workflow():
     rec2 = plan.add_record(ctx, obj, 'CURVED', [curve_contact(obj, diag)])
     check(len(s.cuts) == 2 and s.active_cut == 1, "two records added")
     check(
-        bpy.data.objects.get(rec1.surface_a) is not None and bpy.data.objects.get(rec1.pin_a) is not None,
+        rec1.surface_obj_a is not None and rec1.pin_obj_a is not None,
         "preview objects exist",
     )
     check(abs(rec1.inscribed_a - 20.0) < 1.0, f"record inscribed diameter {rec1.inscribed_a:.2f}")
     check(abs(rec1.pin_width_mm - 9.0) < 0.5, f"preset width from inscribed: {rec1.pin_width_mm:.2f} mm")
     # change settings on the record -> preview follows
-    pin = bpy.data.objects.get(rec1.pin_a)
+    pin = rec1.pin_obj_a
     old_scale = pin.scale.copy()
     rec1.size_preset = 'LARGE'
     check(pin.scale.x > old_scale.x, "preset change rescaled the pin preview")
@@ -578,7 +578,7 @@ def test_plan_workflow():
     rec2.enabled = False
     res = bpy.ops.esp.build()
     check(res == {'FINISHED'} and s.built, "build finished")
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(col is not None and len(col.objects) == 2, f"built collection has 2 parts ({len(col.objects) if col else 0})")
     check(
         obj.hide_get() and obj.name in bpy.data.collections[plan.BACKUP_COLLECTION].objects, "original hidden in backup"
@@ -589,7 +589,7 @@ def test_plan_workflow():
     # add the curve cut back and rebuild -> 3 parts
     rec2.enabled = True
     res = bpy.ops.esp.build()
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(res == {'FINISHED'} and len(col.objects) == 3, f"rebuild with 2 cuts -> 3 parts ({len(col.objects)})")
     names = sorted(o.name for o in col.objects)
     check(names == ["Figure_PART_001", "Figure_PART_002", "Figure_PART_003"], f"part names {names}")
@@ -692,7 +692,7 @@ def test_several_connectors():
     s.pin_count = 3
     obj = make_slab()
     rec = plan.add_record(ctx, obj, 'STRAIGHT', [section_contact(obj, 0.0)])
-    pin = bpy.data.objects.get(rec.pin_a)
+    pin = rec.pin_obj_a
     check(rec.pin_count == 3, "a new cut takes the Count of the settings")
     check(loose_pieces(pin.data) == 3, f"the preview shows three pins ({loose_pieces(pin.data)})")
     check(pin.get("esp_layout_count") == 3, "and records that all three fit")
@@ -713,7 +713,7 @@ def test_several_connectors():
     rec.pin_count = 3
 
     res = bpy.ops.esp.build()
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(res == {'FINISHED'} and col is not None and len(col.objects) == 2, "the build makes two parts")
     for o in col.objects:
         check(loose_pieces(o.data) == 1, f"{o.name} is one piece, every pin fused to it")
@@ -856,15 +856,15 @@ def test_clear_plan_after_a_build_keeps_the_parts():
     bpy.ops.esp.clear_plan('EXEC_DEFAULT')
     kept = sorted(o.name for o in bpy.data.objects if o.name.startswith("Cube_PART"))
     check(kept == ["Cube_PART_001", "Cube_PART_002"], f"the parts are kept ({kept})")
-    check(sc.esp.base_object == "", "the plan no longer points at the original")
+    check(sc.esp.base_obj is None, "the plan no longer points at the original")
     upper = max((bpy.data.objects[n] for n in kept), key=lambda o: mesh_utils.mesh_bounds(o.data)[1].z)
     plan.add_record(bpy.context, upper, 'STRAIGHT', [section_contact(upper, 15.0)])
-    check(sc.esp.base_object == upper.name, f"a new cut on a part makes that part the source ({sc.esp.base_object})")
+    check(sc.esp.base_obj == upper, f"a new cut on a part makes that part the source ({sc.esp.base_obj})")
     check(bpy.ops.esp.build() == {'FINISHED'}, "the new plan builds")
     check(
         cube.hide_get() and cube.name in bpy.data.collections[plan.BACKUP_COLLECTION].objects, "the original stays put"
     )
-    col = bpy.data.collections[sc.esp.built_collection]
+    col = sc.esp.built_col
     tops = sorted(round(mesh_utils.mesh_bounds(o.data)[1].z, 1) for o in col.objects)
     check(len(col.objects) == 2 and tops[-1] == 30.0 and tops[0] < 16.0, f"the part was cut, not the model ({tops})")
     bpy.ops.esp.return_to_plan()
@@ -900,7 +900,7 @@ def test_a_cancelled_build_goes_back_to_the_plan():
     check(not any(r.built for r in s.cuts) and not s.built, "nothing is marked built")
     check(not bar.hide_get(), "the model is back in view")
     check(bpy.ops.esp.build() == {'FINISHED'}, "the next build runs")
-    col = bpy.data.collections[s.built_collection]
+    col = s.built_col
     names = sorted(o.name for o in col.objects)
     check(names == ["Bar_PART_001", "Bar_PART_002", "Bar_PART_003"], f"and makes exactly its own parts ({names})")
 
@@ -918,7 +918,7 @@ def test_back_to_plan_gives_every_source_back():
     r2.enabled = r3.enabled = False
     bpy.ops.esp.build()
     bpy.ops.esp.approve()  # the two unbuilt cuts move onto the two halves
-    sources = sorted({r.target for r in s.cuts})
+    sources = sorted({r.target_obj.name for r in s.cuts})
     check(len(sources) == 2, f"the kept cuts sit on two parts ({sources})")
     for r in s.cuts:
         r.enabled = True
@@ -948,35 +948,105 @@ def test_a_built_plan_is_not_edited_blind():
     check(all(getattr(bpy.ops.esp, op).poll() for op in ops), "and all of them again after Back to Plan")
 
 
-def test_a_renamed_model_keeps_its_plan():
+def test_the_plan_holds_its_objects_by_pointer():
     """Renaming the model, or a preview, after planning does not break the plan."""
-    print("== a renamed model keeps its plan")
+    print("== the plan holds its objects by pointer")
     sc = reset_scene()
     s = sc.esp
     s.mode = 'PLAN'
     cube = make_slab("Statue", size=(20.0, 20.0, 60.0))
     rec = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 0.0)])
+    pin, surface = rec.pin_obj_a, rec.surface_obj_a
     cube.name = "Statue_final"
-    bpy.data.objects[rec.pin_a].name = "my pin"
-    check(bpy.ops.esp.build() == {'FINISHED'}, "the plan still builds")
-    check(s.base_object == "Statue_final" and rec.target == "Statue_final", "and follows the new name")
-    check(rec.pin_a == "my pin", "a renamed preview is followed too")
-    col = bpy.data.collections[s.built_collection]
-    check(len(col.objects) == 2, f"two parts ({len(col.objects)})")
-
-    # a plane's preview surface, renamed: it keeps the plane's own anchor next to the tag
-    bpy.ops.esp.return_to_plan()
-    surface = bpy.data.objects[rec.surface_a]
+    pin.name = "my pin"
     surface.name = "my plane"
-    check(bpy.ops.esp.build() == {'FINISHED'} and rec.surface_a == "my plane", "a renamed plane surface is followed")
-    bpy.ops.esp.return_to_plan()
+    # a copy carries everything the original does; the plan must still mean the original
+    copy = cube.copy()
+    sc.collection.objects.link(copy)
+    cube.name = "Statue_v2"
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the plan still builds")
+    check(s.base_obj == cube and rec.target_obj == cube, f"on the renamed model, not its copy ({s.base_obj})")
+    check(rec.pin_obj_a == pin and rec.surface_obj_a == surface, "renamed previews are the plan's still")
+    col = s.built_col
+    check(col is not None and len(col.objects) == 2, f"two parts ({len(col.objects) if col else 0})")
+    col.name = "my parts"
+    check(bpy.ops.esp.return_to_plan() == {'FINISHED'}, "back to the plan")
+    check(bpy.data.collections.get("my parts") is None, "the renamed parts' collection went with its parts")
 
-    # a copy of the model carries the same tag: renaming the original must not pick the copy
-    copy = bpy.data.objects["Statue_final"].copy()
-    bpy.context.scene.collection.objects.link(copy)
-    bpy.data.objects["Statue_final"].name = "Statue_v2"
-    plan.heal_names(sc)
-    check(s.base_object == "Statue_v2", f"the original, not its copy, is followed ({s.base_object})")
+    # deleted in the viewport: the pointer kept the object in the file, but not in the scene
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == pin)
+    bpy.context.view_layer.objects.active = pin
+    bpy.ops.object.delete()
+    check(plan.pin_of(rec, 0) is None, "a deleted connector preview is gone for the plan")
+    plan.depsgraph_handler(sc, None)  # what Blender runs after the delete
+    check(rec.pin_obj_a is None and pin.users == 0, f"and let go of, for Blender to drop ({pin.users} users)")
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == cube)
+    bpy.context.view_layer.objects.active = cube
+    bpy.ops.object.delete()
+    check(plan.base_of(s) is None and plan.resolve_target(bpy.context) is not cube, "a deleted model is gone too")
+    try:
+        res = bpy.ops.esp.build()
+    except RuntimeError:
+        res = {'CANCELLED'}
+    check(res == {'CANCELLED'}, "and the plan does not build on it")
+
+
+def test_a_file_saved_with_names_opens_with_its_plan():
+    """A .blend saved when the plan named its objects comes back with every reference."""
+    print("== a file saved with names opens with its plan")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    cube = make_slab("Statue", size=(40.0, 20.0, 60.0))
+    d1 = plan.ContactData('STRAIGHT')
+    co, no = Vector((0, 0, 0)), Vector((1, 0, 0))
+    d1.plane_co, d1.plane_no, d1.center_hint, d1.anchor = co, no, co, co
+    plan.fill_straight_contact(d1, plan.straight_section(bpy.context, cube, co, no, None, co), None)
+    plan.add_record(bpy.context, cube, 'STRAIGHT', [d1])
+    rec = plan.add_record(bpy.context, cube, 'STRAIGHT', [section_contact(cube, 10.0)])
+    check(bpy.ops.esp.build() == {'FINISHED'}, "built")
+    # what a file of the name-based plan holds: names in strings, a tag on each object
+    names = {"base_object": s.base_obj.name, "built_collection": s.built_col.name}
+    s.base_obj = s.built_col = None
+    for k, v in names.items():
+        s[k] = v
+    old = []
+    for r in s.cuts:
+        refs = {k: getattr(r, a).name if getattr(r, a) else "" for k, a in plan.LEGACY_RECORD.items()}
+        refs["extras"] = [e.pin_obj.name for e in r.extras]
+        old.append(refs)
+        for k, a in plan.LEGACY_RECORD.items():
+            setattr(r, a, None)
+            r[k] = refs[k]
+        for e in r.extras:
+            e["pin"] = e.pin_obj.name
+            e.pin_obj = None
+    cube["esp_ref_name"] = cube.name
+    extras = len(rec.extras)
+    check(extras > 0, f"the second cut shows connectors on both halves ({extras})")
+    path = os.path.join(tempfile.mkdtemp(), "named_plan.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    bpy.ops.wm.open_mainfile(filepath=path)
+
+    s = bpy.context.scene.esp
+    objects = bpy.data.objects
+    check(s.base_obj == objects["Statue"], f"the base is pointed at ({s.base_obj})")
+    check(s.built_col == bpy.data.collections[names["built_collection"]], "and the built parts")
+    for r, refs in zip(s.cuts, old):
+        for k, a in plan.LEGACY_RECORD.items():
+            want = objects.get(refs[k]) if refs[k] else None
+            check(getattr(r, a) == want, f"{r.name}: {k} -> {a} ({getattr(r, a)})")
+            check(k not in r, f"{r.name}: the old '{k}' is dropped")
+        check([e.pin_obj.name for e in r.extras] == refs["extras"], f"{r.name}: its extra connectors")
+        check(all("pin" not in e for e in r.extras), f"{r.name}: their old names are dropped")
+    check("base_object" not in s and "esp_ref_name" not in objects["Statue"], "nothing of the names is left")
+    check(bpy.ops.esp.return_to_plan() == {'FINISHED'}, "back to the plan")
+    check(bpy.data.collections.get(names["built_collection"]) is None, "the parts it found went")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "and the plan builds again")
+    check(len(s.built_col.objects) == 4, f"four parts ({len(s.built_col.objects)})")
+    check(plan.migrate_file() is False, "a second pass finds nothing to bring over")
 
 
 def test_a_cut_across_earlier_cuts_cuts_every_part():
@@ -1003,7 +1073,7 @@ def test_a_cut_across_earlier_cuts_cuts_every_part():
         plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, z)])
         what = f"plane at z={z:.0f}, {count} pin(s)"
         check(bpy.ops.esp.build() == {'FINISHED'}, f"{what}: built")
-        col = bpy.data.collections[s.built_collection]
+        col = s.built_col
         parts = list(col.objects)
         check(len(parts) == 4, f"{what}: four parts from two cuts ({len(parts)})")
         for o in parts:
@@ -1086,14 +1156,14 @@ def test_base_split_preview_points_like_the_build():
     d0 = plane_section_contact(fig, (-15.0, 0.0, 3.0), (0.0, 0.0, 1.0), stroke)
     d1 = plane_section_contact(fig, (15.0, 0.0, 3.0), (0.0, 0.0, -1.0), stroke)  # drawn the other way
     rec = plan.add_record(bpy.context, fig, 'STRAIGHT', [d0, d1])
-    dirs = [bpy.data.objects[name].matrix_world.col[2].xyz.z for name in (rec.pin_a, rec.pin_b)]
+    dirs = [p.matrix_world.col[2].xyz.z for p in (rec.pin_obj_a, rec.pin_obj_b)]
     check(dirs[0] < 0.0 and dirs[1] < 0.0, f"both preview pins point down into the base ({dirs[0]:.1f}, {dirs[1]:.1f})")
     check(rec.normal_b[2] > 0.0, "the second contact's + side is the legs, like the first's")
     plan.refresh_record_frames(bpy.context, rec)
-    pin_b = bpy.data.objects[rec.pin_b]
+    pin_b = rec.pin_obj_b
     check(pin_b.matrix_world.col[2].xyz.z < 0.0, "and still after the frames are measured again")
     check(bpy.ops.esp.build() == {'FINISHED'}, "the split builds")
-    parts = list(bpy.data.collections[sc.esp.built_collection].objects)
+    parts = list(sc.esp.built_col.objects)
     legs = [o for o in parts if mesh_utils.mesh_bounds(o.data)[1].z > 30.0]
     base = [o for o in parts if o not in legs]
     lo, hi = mesh_utils.mesh_bounds(legs[0].data) if len(legs) == 1 else (Vector(), Vector())
@@ -1111,7 +1181,7 @@ def test_base_split_preview_points_like_the_build():
     d1 = plane_section_contact(fig, (15.0, 0.0, 3.0), (0.0, 0.0, 1.0), stroke)
     rec = plan.add_record(bpy.context, fig, 'STRAIGHT', [d0, d1])
     check(rec.normal_b[2] > 0.0, "a second contact facing the right way is left as it is")
-    check(bpy.data.objects[rec.pin_b].matrix_world.col[2].xyz.z < 0.0, "and its pin points down")
+    check(rec.pin_obj_b.matrix_world.col[2].xyz.z < 0.0, "and its pin points down")
 
 
 def test_the_preview_shows_every_connector_a_build_makes():
@@ -1126,7 +1196,7 @@ def test_the_preview_shows_every_connector_a_build_makes():
     check(len(rec.extras) == 1, f"one more connector, for the other half ({len(rec.extras)})")
     s.active_cut = 1
     draw_all_panels(bpy.context)  # the plan panel lists the extra connector
-    pins = [bpy.data.objects[rec.pin_a]] + [bpy.data.objects[e.pin] for e in rec.extras]
+    pins = [rec.pin_obj_a] + [e.pin_obj for e in rec.extras]
     xs = sorted(p.matrix_world.translation.x for p in pins)
     check(xs[0] < -2.0 and xs[1] > 2.0, f"one connector in each half ({[round(x, 1) for x in xs]})")
 
@@ -1136,14 +1206,14 @@ def test_the_preview_shows_every_connector_a_build_makes():
     check(len(rec.extras) == 1, "and back when it is in")
 
     # moved by hand, the extra connector is built where it was left
-    pins = [bpy.data.objects[rec.pin_a]] + [bpy.data.objects[e.pin] for e in rec.extras]
-    extra = bpy.data.objects[rec.extras[0].pin]
+    pins = [rec.pin_obj_a] + [e.pin_obj for e in rec.extras]
+    extra = rec.extras[0].pin_obj
     extra.location.y += 2.0
     bpy.context.view_layer.update()
     planned = sorted((p.matrix_world.translation.x, p.matrix_world.translation.y) for p in pins)
     tips = sorted(round(p.matrix_world.translation.z - p.matrix_world.col[2].xyz.length, 1) for p in pins)
     check(bpy.ops.esp.build() == {'FINISHED'}, "built")
-    col = bpy.data.collections[s.built_collection]
+    col = s.built_col
     built = []
     for o in col.objects:
         if mesh_utils.mesh_bounds(o.data)[1].z < 29.0:
@@ -1170,22 +1240,14 @@ def test_the_preview_shows_every_connector_a_build_makes():
 
     bpy.ops.esp.return_to_plan()
 
-    # a renamed extra connector is followed like any preview
-    bpy.data.objects[rec.extras[0].pin].name = "my extra pin"
-    plan.heal_names(sc)
-    check(rec.extras[0].pin == "my extra pin", "a renamed extra connector is followed")
-
     # the earlier cut's connector moved and made bigger: the later cut's preview follows it
-    pin1 = bpy.data.objects[first.pin_a]
+    pin1 = first.pin_obj_a
     pin1.location.z += 14.0
     bpy.context.view_layer.update()
     plan.depsgraph_handler(sc, None)  # what Blender runs after the move
     first.size_preset = 'LARGE'
     plan._refresh_pending_after()  # what the timer runs a moment later
-    planned = sorted(
-        tuple(round(c, 1) for c in bpy.data.objects[n].matrix_world.translation)
-        for n in [rec.pin_a] + [e.pin for e in rec.extras]
-    )
+    planned = sorted(tuple(round(c, 1) for c in p.matrix_world.translation) for p in plan.record_pins(rec))
     used = []
     real_fit = plan.fit_depth
 
@@ -1217,7 +1279,7 @@ def test_the_preview_shows_every_connector_a_build_makes():
     third = plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, 10.0)])
     check(len(third.extras) == 3, f"four connectors for four parts ({1 + len(third.extras)})")
     check(bpy.ops.esp.build() == {'FINISHED'}, "built")
-    col = bpy.data.collections[s.built_collection]
+    col = s.built_col
     check(len(col.objects) == 8, f"eight parts ({len(col.objects)})")
     uppers = [o for o in col.objects if mesh_utils.mesh_bounds(o.data)[1].z > 29.0]
     with_pins = [o for o in uppers if mesh_utils.mesh_bounds(o.data)[0].z < 9.0]
@@ -1233,7 +1295,7 @@ def test_the_preview_shows_every_connector_a_build_makes():
     d.anchor = Vector((19.8, 0.0, 10.0))  # drawn over the sliver
     rec = plan.add_record(bpy.context, box, 'STRAIGHT', [d])
     shown = 1 + len(rec.extras)
-    check(shown == 1 and bpy.data.objects[rec.pin_a].matrix_world.translation.x < 18.0, "one connector, off the sliver")
+    check(shown == 1 and rec.pin_obj_a.matrix_world.translation.x < 18.0, "one connector, off the sliver")
     check(bpy.ops.esp.build() == {'FINISHED'}, "the sliver builds")
 
 
@@ -1255,9 +1317,9 @@ def test_cut_after_approve():
     upper = parts[1]  # -10 .. 30
     ctx.view_layer.objects.active = upper
     plan.add_record(ctx, upper, 'STRAIGHT', [plane_contact(10.0, diag)])
-    check(s.base_object == upper.name, f"plan rooted at the approved part ({s.base_object})")
+    check(s.base_obj == upper, f"plan rooted at the approved part ({s.base_obj})")
     res = bpy.ops.esp.build()
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(res == {'FINISHED'} and col is not None and len(col.objects) == 2, "second build made 2 parts")
     # the part starts at z=-10 and its connector hangs a little below that; the whole
     # model would reach z=-30, so a bottom near -30 means the original got cut instead
@@ -1293,16 +1355,16 @@ def test_approve_keeps_unbuilt_cuts():
     rec = s.cuts[0]
     parts = sorted(bpy.data.collections["ESP_Built_Keep"].objects, key=lambda o: world_bounds(o)[0].z)
     upper = parts[1]  # -10 .. 30, where the z=10 cut sits
-    check(rec.target == upper.name, f"the kept cut now targets the part under it ({rec.target})")
-    check(s.base_object == upper.name, f"the plan is rooted at that part ({s.base_object})")
-    check(bpy.data.objects.get(rec.surface_a) is not None, "its preview surface is still there")
+    check(rec.target_obj == upper, f"the kept cut now targets the part under it ({rec.target_obj})")
+    check(s.base_obj == upper, f"the plan is rooted at that part ({s.base_obj})")
+    check(rec.surface_obj_a is not None, "its preview surface is still there")
     col = bpy.data.collections.get(plan.PLAN_COLLECTION)
     check(col is not None and not col.hide_viewport, "the plan is visible again")
     check(s.last_message.startswith("Parts approved, 1 unbuilt cut(s) kept"), f"message says so ({s.last_message})")
     draw_all_panels(ctx)
     rec.enabled = True
     res = bpy.ops.esp.build()
-    col = bpy.data.collections.get(s.built_collection)
+    col = s.built_col
     check(res == {'FINISHED'} and col is not None and len(col.objects) == 2, "the kept cut builds on the part")
     lowest = min(world_bounds(o)[0].z for o in col.objects)
     check(lowest > -25.0, f"it cut the part, not the whole model (lowest z {lowest:.1f})")
@@ -1325,11 +1387,11 @@ def test_two_contact_surfaces_edit_by_points():
     diag = mesh_utils.object_world_diagonal(obj)
     ctx = bpy.context
     rec = plan.add_record(ctx, obj, 'CURVED', [curve_contact(obj, diag), curve_contact(obj, diag, y_end=8.0)])
-    check(rec.two_contact and rec.surface_a and rec.surface_b, "a two-contact curve cut has two surfaces")
+    check(rec.two_contact and rec.surface_obj_a and rec.surface_obj_b, "a two-contact curve cut has two surfaces")
     a, by_pts_a = edit_surface_of(rec, 0)
     b, by_pts_b = edit_surface_of(rec, 1)
-    check(a is not None and a.name == rec.surface_a and by_pts_a, "contact 1 edits by points")
-    check(b is not None and b.name == rec.surface_b and by_pts_b, "contact 2 edits by points, on its own surface")
+    check(a is not None and a == rec.surface_obj_a and by_pts_a, "contact 1 edits by points")
+    check(b is not None and b == rec.surface_obj_b and by_pts_b, "contact 2 edits by points, on its own surface")
     check(a != b and len(plan.surface_points(b)) == 20, "the second surface carries its own control points")
     draw_all_panels(ctx)
     loop = plan.add_record(ctx, obj, 'FREEHAND', [freehand_contact(obj), freehand_contact(obj, height=-5.0)])
@@ -1582,7 +1644,7 @@ def edit_session(rec):
     ses.reports = []
     ses.report = lambda kind, msg: ses.reports.append(msg)
     ses.rec = rec
-    ses.sobj = bpy.data.objects.get(rec.surface_a)
+    ses.sobj = rec.surface_obj_a
     view = FakeRegion('WINDOW', 0, 0, 1000, 800)
     ses.area = FakeArea([view, FakeRegion('UI', 800, 0, 200, 800)])
     ses.window = None
@@ -1590,7 +1652,7 @@ def edit_session(rec):
     ses.rv3d = None
     ses.kind = ses.sobj.get("esp_kind")
     ses.closed = ses.kind == 'FREEHAND'
-    ses.target = bpy.data.objects.get(rec.target)
+    ses.target = rec.target_obj
     ses.mw = ses.sobj.matrix_world.copy()
     ses.inv = ses.mw.inverted_safe()
     ses.points = plan.surface_points(ses.sobj)
@@ -1693,7 +1755,8 @@ if __name__ == "__main__":
     test_a_cancelled_build_goes_back_to_the_plan()
     test_back_to_plan_gives_every_source_back()
     test_a_built_plan_is_not_edited_blind()
-    test_a_renamed_model_keeps_its_plan()
+    test_the_plan_holds_its_objects_by_pointer()
+    test_a_file_saved_with_names_opens_with_its_plan()
     test_a_cut_across_earlier_cuts_cuts_every_part()
     test_base_split_preview_points_like_the_build()
     test_the_preview_shows_every_connector_a_build_makes()
