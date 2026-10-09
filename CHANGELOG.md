@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The format follows
   is never changed. Works in Quick Cut and Plan mode, on every cut tool and on both contacts of
   a Base Split. In Plan mode the preview shows every pin and G/R/S moves them as a group
   (`plan.compute_layout`, `section.spread_points`).
+- **The preview shows every connector a Build makes.** When a cut runs across an earlier cut of
+  the plan, the Build cuts every part it crosses and gives each one a connector; those used to
+  appear only in the result. Planning now divides the cut face the way the earlier cuts will,
+  keeps the cut's connector on the stretch it was drawn on, and shows one more connector for each
+  other part — kept clear of the earlier cuts' pins and sockets, off stretches too narrow for a
+  pin, and as long as the build will make them. They can be moved like any connector, and the
+  Build makes them where they are left. Changing or moving an earlier cut's connector updates
+  the cuts after it a moment later.
 
 ### Fixed
 - **A connector with more than one lobe gets the clearance it asked for.** The socket was grown

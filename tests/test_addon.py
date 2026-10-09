@@ -1114,6 +1114,129 @@ def test_base_split_preview_points_like_the_build():
     check(bpy.data.objects[rec.pin_b].matrix_world.col[2].xyz.z < 0.0, "and its pin points down")
 
 
+def test_the_preview_shows_every_connector_a_build_makes():
+    """A cut across an earlier one shows a connector on each part it will cut, and Build makes those."""
+    print("== the preview shows every connector a build makes")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    box = make_slab("Box", size=(40.0, 20.0, 60.0))
+    first = plan.add_record(bpy.context, box, 'STRAIGHT', [plane_section_contact(box, (0, 0, 0), (1, 0, 0))])
+    rec = plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, 10.0)])
+    check(len(rec.extras) == 1, f"one more connector, for the other half ({len(rec.extras)})")
+    s.active_cut = 1
+    draw_all_panels(bpy.context)  # the plan panel lists the extra connector
+    pins = [bpy.data.objects[rec.pin_a]] + [bpy.data.objects[e.pin] for e in rec.extras]
+    xs = sorted(p.matrix_world.translation.x for p in pins)
+    check(xs[0] < -2.0 and xs[1] > 2.0, f"one connector in each half ({[round(x, 1) for x in xs]})")
+
+    first.enabled = False
+    check(len(rec.extras) == 0, "with the first cut left out, the face is whole again: one connector")
+    first.enabled = True
+    check(len(rec.extras) == 1, "and back when it is in")
+
+    # moved by hand, the extra connector is built where it was left
+    pins = [bpy.data.objects[rec.pin_a]] + [bpy.data.objects[e.pin] for e in rec.extras]
+    extra = bpy.data.objects[rec.extras[0].pin]
+    extra.location.y += 2.0
+    bpy.context.view_layer.update()
+    planned = sorted((p.matrix_world.translation.x, p.matrix_world.translation.y) for p in pins)
+    tips = sorted(round(p.matrix_world.translation.z - p.matrix_world.col[2].xyz.length, 1) for p in pins)
+    check(bpy.ops.esp.build() == {'FINISHED'}, "built")
+    col = bpy.data.collections[s.built_collection]
+    built = []
+    for o in col.objects:
+        if mesh_utils.mesh_bounds(o.data)[1].z < 29.0:
+            continue  # a lower part: the pins hang from the upper ones
+        stub = [v.co for v in o.data.vertices if v.co.z < 9.5]
+        if stub:  # the middle of the pin below the cut face
+            built.append(
+                (
+                    (min(v.x for v in stub) + max(v.x for v in stub)) / 2,
+                    (min(v.y for v in stub) + max(v.y for v in stub)) / 2,
+                )
+            )
+    built.sort()
+    close = len(built) == len(planned) and all(
+        abs(a[0] - b[0]) < 0.6 and abs(a[1] - b[1]) < 0.6 for a, b in zip(built, planned)
+    )
+    check(close, f"the pins are built where the preview shows them ({built} vs {planned})")
+    lows = sorted(
+        round(mesh_utils.mesh_bounds(o.data)[0].z, 1) for o in col.objects if mesh_utils.mesh_bounds(o.data)[1].z > 29.0
+    )
+    check(
+        all(abs(a - b) < 0.2 for a, b in zip(lows, tips)), f"and as long as the preview shows them ({lows} vs {tips})"
+    )
+
+    bpy.ops.esp.return_to_plan()
+
+    # a renamed extra connector is followed like any preview
+    bpy.data.objects[rec.extras[0].pin].name = "my extra pin"
+    plan.heal_names(sc)
+    check(rec.extras[0].pin == "my extra pin", "a renamed extra connector is followed")
+
+    # the earlier cut's connector moved and made bigger: the later cut's preview follows it
+    pin1 = bpy.data.objects[first.pin_a]
+    pin1.location.z += 14.0
+    bpy.context.view_layer.update()
+    plan.depsgraph_handler(sc, None)  # what Blender runs after the move
+    first.size_preset = 'LARGE'
+    plan._refresh_pending_after()  # what the timer runs a moment later
+    planned = sorted(
+        tuple(round(c, 1) for c in bpy.data.objects[n].matrix_world.translation)
+        for n in [rec.pin_a] + [e.pin for e in rec.extras]
+    )
+    used = []
+    real_fit = plan.fit_depth
+
+    def spy(context, record, spec, part):
+        out = real_fit(context, record, spec, part)
+        if record.name == rec.name:
+            used.extend(tuple(round(c, 1) for c in c_.pin_matrix.translation) for c_ in out.contacts if c_.add_pin)
+        return out
+
+    plan.fit_depth = spy
+    try:
+        bpy.ops.esp.build()
+    finally:
+        plan.fit_depth = real_fit
+    check(sorted(used) == planned, f"the build follows the refreshed preview ({sorted(used)} vs {planned})")
+    bpy.ops.esp.return_to_plan()
+
+    plan.remove_record(bpy.context, 0)
+    check(len(s.cuts[0].extras) == 0, "deleting the first cut takes the extra connector away")
+
+    # three cuts: x, y, then z - the last one shows a connector on each of its four parts,
+    # none of them inside an earlier connector, and the build makes those four
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    box = make_slab("Box3", size=(40.0, 20.0, 60.0))
+    plan.add_record(bpy.context, box, 'STRAIGHT', [plane_section_contact(box, (0, 0, 0), (1, 0, 0))])
+    plan.add_record(bpy.context, box, 'STRAIGHT', [plane_section_contact(box, (0, 0, 0), (0, 1, 0))])
+    third = plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, 10.0)])
+    check(len(third.extras) == 3, f"four connectors for four parts ({1 + len(third.extras)})")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "built")
+    col = bpy.data.collections[s.built_collection]
+    check(len(col.objects) == 8, f"eight parts ({len(col.objects)})")
+    uppers = [o for o in col.objects if mesh_utils.mesh_bounds(o.data)[1].z > 29.0]
+    with_pins = [o for o in uppers if mesh_utils.mesh_bounds(o.data)[0].z < 9.0]
+    check(len(with_pins) == 4, f"each upper part carries its pin ({len(with_pins)})")
+
+    # a sliver too narrow for a pin: the plan shows none on it, and the build makes none
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    box = make_slab("Sliver", size=(40.0, 20.0, 60.0))
+    plan.add_record(bpy.context, box, 'STRAIGHT', [plane_section_contact(box, (19.1, 0, 0), (1, 0, 0))])
+    d = section_contact(box, 10.0)
+    d.anchor = Vector((19.8, 0.0, 10.0))  # drawn over the sliver
+    rec = plan.add_record(bpy.context, box, 'STRAIGHT', [d])
+    shown = 1 + len(rec.extras)
+    check(shown == 1 and bpy.data.objects[rec.pin_a].matrix_world.translation.x < 18.0, "one connector, off the sliver")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "the sliver builds")
+
+
 def test_cut_after_approve():
     """A cut drawn on an approved part cuts that part, not the model it came from."""
     print("== cutting an approved part")
@@ -1573,6 +1696,7 @@ if __name__ == "__main__":
     test_a_renamed_model_keeps_its_plan()
     test_a_cut_across_earlier_cuts_cuts_every_part()
     test_base_split_preview_points_like_the_build()
+    test_the_preview_shows_every_connector_a_build_makes()
     test_cut_after_approve()
     test_approve_keeps_unbuilt_cuts()
     test_two_contact_surfaces_edit_by_points()

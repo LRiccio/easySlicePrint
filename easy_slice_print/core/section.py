@@ -623,14 +623,15 @@ def spread_points(verts, faces, normal, count, margin, separation, resolution=48
 
     if clearance is None:
         return _spread(feasible, count, separation, extent)
-    for _attempt in range(40):
+    for _attempt in range(3):
         pts = _spread(feasible, count, separation, extent)
         misfits = [q for q in pts if not fits(q)]
         if not misfits:
             return pts
         struck = {tuple(q) for q in misfits}
         feasible = [t for t in feasible if tuple(t[0]) not in struck]
-    # the outline misleads badly here (a hollow, a thin wall): ask about every sample
+    # the outline misleads here (a hollow, a thin wall, a face shared with other parts):
+    # ask about every sample, once
     feasible = [t for t in feasible if fits(t[0])]
     return _spread(feasible, count, separation, extent)
 
@@ -689,6 +690,95 @@ def _spread(feasible, count, separation, extent):
         if not moved:
             break
     return pts
+
+
+def face_points(verts, faces, normal, resolution=48):
+    """Points spread over a patch: its face centres and a grid laid on it. -> (points, step)
+
+    The grid is what finds every stretch of a large face made of a few big triangles; a
+    curved patch, which the grid misses, has the face centres.
+    """
+    if not verts or not faces:
+        return [], 0.0
+    n = Vector(normal).normalized()
+    u, v = surfaces.plane_basis(n)
+    patch = mesh_utils.bvh_from_pydata(verts, faces)
+    inside_eps = max(section_extent(verts) * 1e-4, 1e-7)
+    origin = surfaces.patch_center(verts)
+    us = [(Vector(p) - origin).dot(u) for p in verts]
+    vs = [(Vector(p) - origin).dot(v) for p in verts]
+    lo_u, hi_u, lo_v, hi_v = min(us), max(us), min(vs), max(vs)
+    step = max(hi_u - lo_u, hi_v - lo_v, 1e-9) / resolution
+    points = [Vector(c) for c in _face_samples(verts, faces, rows=1)]
+    for i in range(resolution + 1):
+        for j in range(resolution + 1):
+            q = origin + u * (lo_u + (hi_u - lo_u) * i / resolution) + v * (lo_v + (hi_v - lo_v) * j / resolution)
+            loc, _nor, _i, _d = patch.find_nearest(q)
+            if loc is not None and (loc - q).length <= inside_eps:
+                points.append(q)
+    return points, step
+
+
+def face_regions(verts, faces, normal, blockers, inside, resolution=48):
+    """Split a cut face into the stretches that end up in different parts.
+
+    An earlier cut of the same plan runs across this face when the two cross, and the
+    build will then cut each part of the earlier cut on its own. Samples are spread over
+    the face, kept where `inside(p)` (the model's material), and joined to their
+    neighbours unless the segment between them crosses one of the `blockers` - BVHs of
+    the earlier cut surfaces. A cut that ends half way across leaves its two sides joined
+    round its end, as the material is. -> (samples, labels, radius): the label of every
+    sample (0 = the biggest region) and the radius a point may be from a sample to belong
+    to its region. Empty when nothing of the face is in the material.
+    """
+    from mathutils.kdtree import KDTree
+
+    candidates, step = face_points(verts, faces, normal, resolution)
+    samples = []
+    on_blocker = step * 0.25  # a sample sitting on an earlier surface belongs to neither side
+    for p in candidates:
+        if any((hit := bvh.find_nearest(p))[0] is not None and hit[3] < on_blocker for bvh in blockers):
+            continue
+        if inside(p):
+            samples.append(p)
+    if not samples:
+        return [], [], 0.0
+    tree = KDTree(len(samples))
+    for i, p in enumerate(samples):
+        tree.insert(p, i)
+    tree.balance()
+    # neighbours reach across the grid's diagonal, or the face samples' own spacing
+    spacing = sorted(tree.find_n(p, 2)[1][2] for p in samples[:: max(1, len(samples) // 200)] if len(samples) > 1)
+    radius = max(step * 1.6, (spacing[len(spacing) // 2] * 1.6) if spacing else 0.0)
+    parent = list(range(len(samples)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def blocked(a, b):
+        d = b - a
+        length = d.length
+        if length < 1e-12:
+            return False
+        d /= length
+        return any(bvh.ray_cast(a, d, length)[0] is not None for bvh in blockers)
+
+    for i, p in enumerate(samples):
+        for _co, j, _dist in tree.find_range(p, radius):
+            if j <= i or root(i) == root(j):
+                continue
+            if not blocked(p, samples[j]):
+                parent[root(j)] = root(i)
+    roots = [root(i) for i in range(len(samples))]
+    sizes = {}
+    for r in roots:
+        sizes[r] = sizes.get(r, 0) + 1
+    order = sorted(sizes, key=lambda r: -sizes[r])
+    index = {r: k for k, r in enumerate(order)}
+    return samples, [index[r] for r in roots], radius
 
 
 def section_extent(verts):

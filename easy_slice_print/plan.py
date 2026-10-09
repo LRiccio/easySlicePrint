@@ -5,6 +5,7 @@ core cut pipeline."""
 
 import math
 
+import bmesh
 import bpy
 from bpy.app.handlers import persistent
 from mathutils import Matrix, Vector
@@ -217,6 +218,7 @@ def heal_names(scene):
         return False
     objects = bpy.data.objects
     names = [settings.base_object] + [getattr(r, f) for r in settings.cuts for f in _RECORD_FIELDS]
+    names += [e.pin for r in settings.cuts for e in r.extras]
     missing = {n for n in names if n and objects.get(n) is None}
     if not missing:
         return False
@@ -240,6 +242,9 @@ def heal_names(scene):
             old = getattr(rec, f)
             if old in renamed:
                 setattr(rec, f, renamed[old].name)
+        for e in rec.extras:
+            if e.pin in renamed:
+                e.pin = renamed[e.pin].name
     for obj in renamed.values():
         remember(obj)
     return True
@@ -1115,7 +1120,9 @@ def auto_pin_matrix(context, rec, i, layout=None):
     normal = Vector(_contact_attr(rec, "normal", i))
     w, h = contact_size_bu(context, rec, _contact_attr(rec, "inscribed", i), _contact_attr(rec, "depth", i))
     k = layout.scale if layout is not None else 1.0
-    return connectors.connector_matrix(center, cutting.protrude_direction(normal, rec.pin_side), w * k, h * k)
+    matrix = connectors.connector_matrix(center, cutting.protrude_direction(normal, rec.pin_side), w * k, h * k)
+    region = _main_region(context, rec, i)
+    return fit_preview(context, rec, matrix, layout, region[0] if region is not None else None)
 
 
 # ----------------------------------------------------------------------------
@@ -1159,12 +1166,17 @@ def _line_layout(center, x_axis, inscribed, count, r, rim):
     return [center + x_axis * (-half + step * j) for j in range(count)]
 
 
-def compute_layout(context, src, verts, faces, is_cut_face, center, normal, inscribed, target=None, grown=0.0):
+def compute_layout(
+    context, src, verts, faces, is_cut_face, center, normal, inscribed, target=None, grown=0.0, region=None
+):
     """PinLayout for `src.pin_count` connectors on one cut surface (world space input).
 
     The pins are spread over the face as far apart as the material allows (see
     `section.spread_points`), each keeping a rim of material round its socket. When
     they do not fit, preset sized pins get smaller first, then fewer are placed.
+
+    `region` - (FaceRegions, k) - keeps them on one stretch of a face an earlier cut
+    of the plan runs across (see `record_regions`).
     """
     asked = max(1, int(getattr(src, "pin_count", 1)))
     if asked <= 1 or not src.add_pin:
@@ -1192,14 +1204,19 @@ def compute_layout(context, src, verts, faces, is_cut_face, center, normal, insc
         len(faces),
         tuple(round(c, 6) for c in (verts[0] if verts else (0.0, 0.0, 0.0))),
         tuple(round(c, 6) for c in (verts[-1] if verts else (0.0, 0.0, 0.0))),
+        (region[0].key, region[1]) if region is not None else None,
     )
     hit = _layout_cache.get(key)
     if hit is not None:
         return PinLayout(list(hit[0]), hit[1], asked)
     found = None
     # a plane section is measured less its grown outline, anything else against the model
-    state = ensure_evaluable(target) if target is not None and is_cut_face and grown <= 0.0 else None
-    clearance = material_clearance(context, target) if state is not None else None
+    state = None
+    if region is not None:
+        clearance = region[0].clearance(region[1])
+    else:
+        state = ensure_evaluable(target) if target is not None and is_cut_face and grown <= 0.0 else None
+        clearance = material_clearance(context, target) if state is not None else None
     try:
         found = _search_layout(
             asked,
@@ -1263,7 +1280,15 @@ def record_layout(context, rec, i):
         _contact_attr(rec, "inscribed", i),
         target=bpy.data.objects.get(rec.target) or bpy.data.objects.get(context.scene.esp.base_object),
         grown=float(sobj.get("esp_grown", 0.0)),
+        region=_main_region(context, rec, i),
     )
+
+
+def _main_region(context, rec, i):
+    if i != 0 or rec.region < 0:
+        return None
+    regions = record_regions(context, rec)
+    return (regions, rec.region) if regions is not None else None
 
 
 def apply_preset(context, rec):
@@ -1321,7 +1346,7 @@ def contact_count(rec):
 
 def record_objects(rec):
     out = []
-    for name in (rec.surface_a, rec.surface_b, rec.pin_a, rec.pin_b):
+    for name in (rec.surface_a, rec.surface_b, rec.pin_a, rec.pin_b, *(e.pin for e in rec.extras)):
         if name:
             obj = bpy.data.objects.get(name)
             if obj is not None:
@@ -1378,6 +1403,8 @@ def add_record(context, target, cut_type, contacts):
             _set_contact_attr(rec, "inscribed", i, inscribed)
             _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
         orient_second_contact(context, target, rec)
+        rec.anchor = contacts[0].anchor
+        extras = place_by_region(context, rec, target)
         apply_preset(context, rec)
         apply_fit(context, rec)
         for i in range(len(contacts)):
@@ -1387,7 +1414,7 @@ def add_record(context, target, cut_type, contacts):
             _set_contact_attr(rec, "pin", i, pin.name)
             _set_contact_attr(rec, "pin_auto", i, flat(matrix))
             pin.hide_viewport = not rec.add_pin
-        rec.anchor = contacts[0].anchor
+        sync_extra_pins(context, rec, extras, target)
         settings.active_cut = len(settings.cuts) - 1
     finally:
         _suspend -= 1
@@ -1417,8 +1444,11 @@ def on_record_settings_changed(context, rec):
             pin.matrix_world = _frame(new_auto) @ delta @ _scale(new_auto)
             _set_contact_attr(rec, "pin_auto", i, flat(new_auto))
             pin.hide_viewport = not (rec.add_pin and rec.show)
+        for j in range(len(rec.extras)):
+            _update_extra_pin(context, rec, j)
     finally:
         _suspend -= 1
+    schedule_cuts_after(rec)
 
 
 def _is_identity(m, tol=1e-5):
@@ -1471,6 +1501,8 @@ def reset_pins(context, rec):
             auto = auto_pin_matrix(context, rec, i, layout)
             pin.matrix_world = auto
             _set_contact_attr(rec, "pin_auto", i, flat(auto))
+        for j in range(len(rec.extras)):
+            _update_extra_pin(context, rec, j, reset=True)
     finally:
         _suspend -= 1
 
@@ -1563,7 +1595,320 @@ def contact_side(verts, faces, normal):
     return 1 if surfaces.patch_normal(verts, faces).dot(Vector(normal)) >= 0.0 else -1
 
 
-def refresh_record_frames(context, rec):
+# ----------------------------------------------------------------------------
+# a cut across earlier cuts: one connector for every part it is going to cut
+# ----------------------------------------------------------------------------
+# A build applies the cuts in order. When a later cut runs across an earlier one, the
+# build cuts every part it crosses (`parts_crossed`), and each needs a connector of its
+# own. Those are worked out here, while planning, from the same geometry the build
+# will meet - so the preview shows every connector the build makes, and the build makes
+# the ones the preview shows (`spec_for_part` takes them).
+MIN_REGION_SAMPLES = 4
+
+
+class FaceRegions:
+    """A cut face divided by earlier cuts: which stretch a point is on, and room on it."""
+
+    def __init__(self, key, samples, labels, radius, material, blockers, obstacles=()):
+        from mathutils.kdtree import KDTree
+
+        self.key = key
+        self.obstacles = obstacles  # (bvh of an earlier cut's connector, room its socket takes)
+        self.labels = labels
+        self.radius = radius
+        self.material = material
+        self.blockers = blockers  # (bvh of the earlier surface, half its kerf)
+        self.tree = KDTree(len(samples))
+        for i, q in enumerate(samples):
+            self.tree.insert(q, i)
+        self.tree.balance()
+        sizes = {}
+        for k in labels:
+            sizes[k] = sizes.get(k, 0) + 1
+        self.big = sorted(k for k, n in sizes.items() if n >= MIN_REGION_SAMPLES)
+
+    def label_at(self, p):
+        _co, i, dist = self.tree.find(p)
+        if i is None or dist > self.radius:
+            return None
+        return self.labels[i]
+
+    def nearest_label(self, p):
+        _co, i, _dist = self.tree.find(p)
+        return None if i is None else self.labels[i]
+
+    def depth(self, context, target, centre, normal):
+        """`contact_depth`, also stopping at the earlier cuts and their connectors on the way."""
+        depth = contact_depth(context, target, centre, normal)
+        for d in (Vector(normal).normalized(), -Vector(normal).normalized()):
+            for bvh, room in (*self.blockers, *self.obstacles):
+                loc, _nor, _i, dist = bvh.ray_cast(Vector(centre), d)
+                if loc is not None:
+                    reach = max(dist - room, 0.0)
+                    depth = reach if depth <= 0.0 else min(depth, reach)
+        return depth
+
+    def clearance(self, k):
+        """`clearance(p)` for the section helpers, confined to stretch `k` of the face."""
+
+        def room(p):
+            p = Vector(p)
+            if self.label_at(p) != k:
+                return -1.0
+            r = self.material(p)
+            if r <= 0.0:
+                return -1.0
+            for bvh, half in self.blockers:
+                loc, _nor, _i, dist = bvh.find_nearest(p)
+                if loc is not None:
+                    r = min(r, dist - half)
+            for bvh, room in self.obstacles:
+                loc, nor, _i, dist = bvh.find_nearest(p)
+                if loc is None:
+                    continue
+                if (p - loc).dot(nor) < 0.0:
+                    return -1.0  # inside an earlier connector's socket
+                r = min(r, dist - room)
+            return r
+
+        return room
+
+
+_regions_cache = {}
+
+
+def _surface_key(obj):
+    return (obj.name, tuple(round(v, 6) for v in flat(obj.matrix_world)), len(obj.data.vertices))
+
+
+def _socket_half(pin):
+    """The half of a connector that sits in a socket - local z >= 0 - as a closed BVH.
+
+    The other half is fused into the material of its own part: a later cut's pin may run
+    through it as through any material, but not into the socket round the first half.
+    """
+    bm = bmesh.new()
+    bm.from_mesh(pin.data)
+    bmesh.ops.bisect_plane(
+        bm,
+        geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
+        plane_co=(0.0, 0.0, 0.0),
+        plane_no=(0.0, 0.0, 1.0),
+        clear_inner=True,
+    )
+    bmesh.ops.holes_fill(bm, edges=[e for e in bm.edges if e.is_boundary])
+    bmesh.ops.transform(bm, matrix=pin.matrix_world, verts=bm.verts)
+    bm.normal_update()
+    if not bm.faces:
+        bm.free()
+        return None
+    bvh = BVHTree.FromBMesh(bm)
+    bm.free()
+    return bvh
+
+
+def record_regions(context, rec):
+    """FaceRegions of the record's cut face, or None when no earlier cut divides it."""
+    if contact_count(rec) != 1:
+        return None
+    settings = context.scene.esp
+    objects = bpy.data.objects
+    sobj = objects.get(rec.surface_a)
+    target = objects.get(rec.target) or objects.get(settings.base_object)
+    if sobj is None or target is None or target.type != 'MESH' or not len(sobj.data.polygons):
+        return None
+    u = mm(context)
+    # what an answer depends on, cheap to gather: the cache is asked on every settings
+    # change, and building the trees for a miss is what takes the time
+    surfaces_before, pins_before = [], []
+    for other in settings.cuts:
+        if other.name == rec.name:
+            break
+        if not other.enabled:
+            continue
+        for i in range(contact_count(other)):
+            o = objects.get(_contact_attr(other, "surface", i))
+            if o is not None and len(o.data.polygons):
+                surfaces_before.append((o, other.cut_gap_mm * u * 0.5))
+        if other.add_pin:
+            socket = other.clearance_mm * u + (other.tip_extra_mm * u if other.asymmetric else 0.0)
+            for name in (other.pin_a, other.pin_b, *(e.pin for e in other.extras)):
+                pin = objects.get(name) if name else None
+                if pin is not None and len(pin.data.polygons):
+                    pins_before.append((pin, socket))
+    if not surfaces_before:
+        return None
+    key = (
+        _surface_key(sobj),
+        tuple((*_surface_key(o), round(half, 7)) for o, half in surfaces_before),
+        tuple((*_surface_key(o), round(room, 7)) for o, room in pins_before),
+        target.name,
+        len(target.data.vertices),
+    )
+    if key in _regions_cache:
+        return _regions_cache[key]
+    verts, faces = surface_world_patch(sobj)
+    own = mesh_utils.bvh_from_pydata(verts, faces)
+    blockers = []
+    for o, half in surfaces_before:
+        bvh = mesh_utils.bvh_from_pydata(*surface_world_patch(o))
+        if own.overlap(bvh):
+            blockers.append((bvh, half))
+    obstacles = []
+    for pin, room in pins_before:
+        bvh = _socket_half(pin)
+        if bvh is not None:
+            obstacles.append((bvh, room))
+    result = None
+    if blockers:
+        state = ensure_evaluable(target)
+        try:
+            material = material_clearance(context, target)
+            if material is not None:
+                samples, labels, radius = section.face_regions(
+                    verts,
+                    faces,
+                    surfaces.patch_normal(verts, faces),
+                    [b for b, _h in blockers],
+                    lambda q: material(q) > 0.0,
+                )
+                if labels and max(labels) > 0:
+                    result = FaceRegions(key, samples, labels, radius, material, blockers, obstacles)
+                    if len(result.big) < 2:
+                        result = None
+        finally:
+            restore_visibility(target, state)
+    if len(_regions_cache) > 16:
+        _regions_cache.clear()
+    _regions_cache[key] = result
+    return result
+
+
+def pin_fits(context, rec, inscribed):
+    """Whether a connector of the record's size fits in a circle of this diameter at all.
+
+    A preset never goes below 1 mm, so a sliver narrower than that has no room for one -
+    the plan shows none there, and the build makes none.
+    """
+    w, _h = contact_size_bu(context, rec, inscribed)
+    return w <= inscribed
+
+
+def place_by_region(context, rec, target):
+    """Put the main connector on the stretch of the face the cut's anchor is on.
+
+    -> [(centre, inscribed, label)] for every other stretch with room for a connector,
+    for `sync_extra_pins`. With no earlier cut dividing the face, nothing changes.
+    """
+    regions = record_regions(context, rec)
+    if regions is None:
+        rec.region = -1
+        return []
+    sobj = bpy.data.objects.get(rec.surface_a)
+    verts, faces = surface_world_patch(sobj)
+    face_normal = surfaces.patch_normal(verts, faces)
+    normal = Vector(rec.normal_a)
+    anchor = regions.nearest_label(Vector(rec.anchor))
+    if anchor not in regions.big:
+        anchor = regions.big[0]
+    found = {}
+    for k in regions.big:
+        hit = section.inscribed_circle(verts, faces, face_normal, clearance=regions.clearance(k))
+        if hit is not None and pin_fits(context, rec, hit[1]):
+            found[k] = hit
+    if anchor not in found and found:
+        # no room on the stretch the cut was drawn on: the build cuts that part without
+        # a connector, and the cut's own connector goes on the roomiest other stretch
+        anchor = max(found, key=lambda k: found[k][1])
+    rec.region = anchor
+    if anchor in found:
+        centre, inscribed = found[anchor]
+        rec.center_a = centre
+        rec.inscribed_a = inscribed
+        rec.depth_a = regions.depth(context, target, centre, normal)
+    return [(found[k][0], found[k][1], k) for k in sorted(found) if k != anchor]
+
+
+def _extra_layout(context, rec, e):
+    regions = record_regions(context, rec)
+    sobj = bpy.data.objects.get(rec.surface_a)
+    if regions is None or sobj is None or max(1, int(rec.pin_count)) <= 1 or not rec.add_pin:
+        return PinLayout(asked=max(1, int(rec.pin_count)))
+    verts, faces = surface_world_patch(sobj)
+    return compute_layout(context, rec, verts, faces, True, e.center, e.normal, e.inscribed, region=(regions, e.region))
+
+
+def _extra_matrix(context, rec, e, layout):
+    w, h = contact_size_bu(context, rec, e.inscribed, e.depth)
+    k = layout.scale
+    matrix = connectors.connector_matrix(
+        Vector(e.center), cutting.protrude_direction(Vector(e.normal), rec.pin_side), w * k, h * k
+    )
+    return fit_preview(context, rec, matrix, layout, record_regions(context, rec))
+
+
+def _update_extra_pin(context, rec, j, reset=False):
+    """Bring extra connector `j`'s preview in line with the record, keeping a user's move."""
+    e = rec.extras[j]
+    layout = _extra_layout(context, rec, e)
+    auto = _extra_matrix(context, rec, e, layout)
+    pin = bpy.data.objects.get(e.pin)
+    if pin is None:
+        pin = create_pin_object(context, f"ESP_Pin_{rec.name}_P{j + 2}", rec.shape, auto, layout)
+        e.pin = pin.name
+    else:
+        if reset or pin_needs_rebuild(pin, rec.shape, layout):
+            update_pin_mesh(pin, rec.shape, layout)
+        else:
+            _store_layout(pin, layout)
+        if reset:
+            pin.matrix_world = auto
+        else:
+            delta = user_delta(unflat(e.pin_auto), pin.matrix_basis)
+            pin.matrix_world = _frame(auto) @ delta @ _scale(auto)
+    e.pin_auto = flat(auto)
+    pin.hide_viewport = not (rec.add_pin and rec.show)
+
+
+def sync_extra_pins(context, rec, items, target):
+    """One extra connector per item of `place_by_region`, previews made or dropped to match."""
+    while len(rec.extras) > len(items):
+        pin = bpy.data.objects.get(rec.extras[-1].pin)
+        if pin is not None:
+            mesh_utils.remove_object(pin)
+        rec.extras.remove(len(rec.extras) - 1)
+    while len(rec.extras) < len(items):
+        rec.extras.add()
+    for j, (centre, inscribed, k) in enumerate(items):
+        e = rec.extras[j]
+        e.center = centre
+        e.normal = rec.normal_a
+        e.inscribed = inscribed
+        regions = record_regions(context, rec)
+        e.depth = (
+            regions.depth(context, target, centre, Vector(rec.normal_a))
+            if regions is not None
+            else contact_depth(context, target, centre, Vector(rec.normal_a))
+        )
+        e.region = k
+        _update_extra_pin(context, rec, j)
+
+
+def refresh_cuts_after(context, rec):
+    """Measure again every cut after `rec`: how earlier cuts divide their faces changed."""
+    settings = context.scene.esp
+    after = False
+    for other in settings.cuts:
+        if after:
+            try:
+                refresh_record_frames(context, other, rebuild=False)
+            except Exception:
+                pass
+        elif other.name == rec.name:
+            after = True
+
+
+def refresh_record_frames(context, rec, rebuild=True):
     """Re-estimate centre/normal/size from the (possibly edited) cut surfaces."""
     target = bpy.data.objects.get(rec.target)
     base = bpy.data.objects.get(context.scene.esp.base_object)
@@ -1575,7 +1920,7 @@ def refresh_record_frames(context, rec):
         sobj = bpy.data.objects.get(_contact_attr(rec, "surface", i))
         if sobj is None:
             continue
-        if sobj.get("esp_kind") == 'STRAIGHT':
+        if rebuild and sobj.get("esp_kind") == 'STRAIGHT':
             rebuild_surface(sobj, context=context, target=target)
         verts, faces = surface_world_patch(sobj)
         hit = Vector(sobj["esp_hit"]) if "esp_hit" in sobj else None
@@ -1604,6 +1949,7 @@ def refresh_record_frames(context, rec):
         _set_contact_attr(rec, "depth", i, contact_depth(context, target, center, normal))
         sobj["esp_mw"] = flat(sobj.matrix_world)
     orient_second_contact(context, target, rec)
+    sync_extra_pins(context, rec, place_by_region(context, rec, target), target)
     on_record_settings_changed(context, rec)
 
 
@@ -1624,6 +1970,10 @@ def set_record_visibility(rec, show):
         if s is not None:
             s.hide_viewport = not show
         p = bpy.data.objects.get(_contact_attr(rec, "pin", i))
+        if p is not None:
+            p.hide_viewport = not (show and rec.add_pin)
+    for e in rec.extras:
+        p = bpy.data.objects.get(e.pin)
         if p is not None:
             p.hide_viewport = not (show and rec.add_pin)
 
@@ -1655,6 +2005,12 @@ def remove_record(context, index):
         mesh_utils.remove_object(obj)
     settings.cuts.remove(index)
     settings.active_cut = min(index, len(settings.cuts) - 1)
+    # the cuts after it no longer have it dividing their faces
+    for later in list(settings.cuts)[index:]:
+        try:
+            refresh_record_frames(context, later, rebuild=False)
+        except Exception:
+            pass
 
 
 def remove_all_records(context):
@@ -1732,7 +2088,9 @@ def parts_crossed(context, parts, spec, threshold):
     samples = []
     for c in spec.contacts:
         verts, faces = c.shown_patch()
-        samples += section._face_samples(verts, faces, rows=2)
+        # the same points the plan divides the face with (`section.face_regions`): a part
+        # the preview gives a connector is a part the build cuts
+        samples += section.face_points(verts, faces, surfaces.patch_normal(verts, faces))[0]
     out = []
     for part in parts:
         if part.type != 'MESH':
@@ -1762,27 +2120,38 @@ def spec_for_part(context, rec, spec, part):
     """`spec` with a connector that sits in `part`, for a cut that runs through several.
 
     The record's connector - where the user left it, as they shaped it - is kept when
-    the whole of it is inside this part: every pin, edge to edge, not just its middle. A
-    part it is not in gets a connector of its own: the record's shape and size settings,
-    placed and sized on the stretch of the cut face that is this part's material. When
-    there is no room for one, the part is cut without.
+    the whole of it is inside this part: every pin, edge to edge, not just its middle.
+    The connectors the plan shows for the other parts the cut crosses (`rec.extras`)
+    are taken the same way. A part none of them is in gets one made here: the record's
+    shape and size settings, placed and sized on the stretch of the cut face that is
+    this part's material. When there is no room for one, the part is cut without.
     """
     import dataclasses
 
     c = spec.contacts[0]
     if not c.add_pin or c.pin_matrix is None:
         return spec
+    # the record's connector first, then those it shows on the other parts it crosses
+    candidates = [c]
+    for e in rec.extras:
+        pin = bpy.data.objects.get(e.pin)
+        mesh = pin_unit_mesh(pin)
+        if mesh is not None:
+            candidates.append(dataclasses.replace(c, pin_matrix=pin.matrix_basis.copy(), pin_mesh=mesh, offsets=None))
     state = ensure_evaluable(part)
     try:
         clearance = material_clearance(context, part)
-        if clearance is None or all(clearance(p) > 0.0 for p in _footprint(c, c.pin_matrix)):
+        if clearance is None:
             return spec
+        for cand in candidates:
+            if all(clearance(p) > 0.0 for p in _footprint(cand, cand.pin_matrix)):
+                return spec if cand is c else dataclasses.replace(spec, contacts=[cand])
         verts, faces = c.shown_patch()
         normal = Vector(rec.normal_a)
         found = section.inscribed_circle(verts, faces, surfaces.patch_normal(verts, faces), clearance=clearance)
     finally:
         restore_visibility(part, state)
-    if found is None:
+    if found is None or not pin_fits(context, rec, found[1]):
         own = dataclasses.replace(c, add_pin=False, pin_matrix=None, pin_mesh=None, offsets=None)
         return dataclasses.replace(spec, contacts=[own])
     centre, inscribed = found
@@ -1798,6 +2167,36 @@ def spec_for_part(context, rec, spec, part):
     return dataclasses.replace(spec, contacts=[own])
 
 
+def _depth_scale(context, rec, matrix, footprint, unit_reach, part, depsgraph, extra=()):
+    """How much of a preset pin's height the material leaves: 1.0, or less to shorten it.
+
+    Rays go both ways along the pin's axis from every point of its footprint, to the
+    part's own surface - and to every `extra` (bvh, room): surfaces the part will have
+    by then that `part` does not show yet (the plan's earlier cuts, their sockets).
+    """
+    z = matrix.col[2].xyz
+    h = z.length
+    if h < 1e-12:
+        return 1.0
+    reach = unit_reach * h
+    diag = mesh_utils.object_world_diagonal(part)
+    depth = None
+    for p in footprint:
+        for d in (z.normalized(), -z.normalized()):
+            hits = mesh_utils.object_ray_hits(part, p, d, diag * 1e-5, depsgraph, max_dist=reach * 4.0, limit=1)
+            if hits:
+                depth = hits[0] if depth is None else min(depth, hits[0])
+            for bvh, room in extra:
+                loc, _nor, _i, dist = bvh.ray_cast(p, d, reach * 4.0)
+                if loc is not None:
+                    gone = max(dist - room, 0.0)
+                    depth = gone if depth is None else min(depth, gone)
+    limit = depth_limit_bu(context, rec, depth or 0.0)
+    if limit is None or reach <= limit:
+        return 1.0
+    return max(limit, DEPTH_MIN_PIN_MM * mm(context)) / reach
+
+
 def fit_depth(context, rec, spec, part):
     """`spec` with every preset pin kept shorter than `part` is deep where the pin goes.
 
@@ -1807,12 +2206,12 @@ def fit_depth(context, rec, spec, part):
     cut face - and a pin as long as the model allowed then runs into that socket, and
     the pin sitting in it. Measured again on the part, across the whole footprint of
     the connector, the pin is shortened to leave a wall before anything it would reach.
+    The preview makes the same measurement in advance (`fit_preview`).
     """
     import dataclasses
 
     if rec.size_preset == 'CUSTOM':
         return spec
-    diag = mesh_utils.object_world_diagonal(part)
     out = []
     changed = False
     state = ensure_evaluable(part)
@@ -1822,32 +2221,44 @@ def fit_depth(context, rec, spec, part):
             if not c.add_pin or c.pin_matrix is None:
                 out.append(c)
                 continue
-            z = c.pin_matrix.col[2].xyz
-            h = z.length
-            if h < 1e-12:
-                out.append(c)
-                continue
             if c.pin_mesh is not None:
                 unit_reach = max((abs(v.co.z) for v in c.pin_mesh.vertices), default=1.0)
             else:
                 unit_reach = 1.0
-            reach = unit_reach * h
-            depth = None
-            for p in _footprint(c, c.pin_matrix):
-                for d in (z.normalized(), -z.normalized()):
-                    hits = mesh_utils.object_ray_hits(part, p, d, diag * 1e-5, depsgraph, max_dist=reach * 4.0, limit=1)
-                    if hits:
-                        depth = hits[0] if depth is None else min(depth, hits[0])
-            limit = depth_limit_bu(context, rec, depth or 0.0)
-            if limit is None or reach <= limit:
+            k = _depth_scale(context, rec, c.pin_matrix, _footprint(c, c.pin_matrix), unit_reach, part, depsgraph)
+            if k >= 1.0:
                 out.append(c)
                 continue
-            k = max(limit, DEPTH_MIN_PIN_MM * mm(context)) / reach
             out.append(dataclasses.replace(c, pin_matrix=c.pin_matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))))
             changed = True
     finally:
         restore_visibility(part, state)
     return dataclasses.replace(spec, contacts=out) if changed else spec
+
+
+def fit_preview(context, rec, matrix, layout, regions=None):
+    """A preview pin's matrix, as short as the build will make it (`fit_depth`).
+
+    On a cut the plan's earlier cuts divide (`regions`), their surfaces and sockets are
+    in the way as well - the part the build cuts will have them.
+    """
+    if rec.size_preset == 'CUSTOM' or not rec.add_pin:
+        return matrix
+    target = bpy.data.objects.get(rec.target) or bpy.data.objects.get(bpy.context.scene.esp.base_object)
+    if target is None or target.type != 'MESH':
+        return matrix
+    shape, custom = connectors.resolve_shape(rec.shape)
+    bm = connectors.unit_layout_bmesh(shape, custom, layout.offsets if layout is not None else None)
+    footprint = [matrix @ Vector(xy) for xy in {(round(v.co.x, 5), round(v.co.y, 5), 0.0) for v in bm.verts}]
+    unit_reach = max((abs(v.co.z) for v in bm.verts), default=1.0)
+    bm.free()
+    extra = (*regions.blockers, *regions.obstacles) if regions is not None else ()
+    state = ensure_evaluable(target)
+    try:
+        k = _depth_scale(context, rec, matrix, footprint, unit_reach, target, context.evaluated_depsgraph_get(), extra)
+    finally:
+        restore_visibility(target, state)
+    return matrix if k >= 1.0 else matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))
 
 
 def crossing_threshold(context, rec, spec):
@@ -1971,10 +2382,18 @@ def _refresh_dirty():
         return 0.1
     names = list(_dirty)
     _dirty = {}
+    moved = False
     for rec in scene.esp.cuts:
         if rec.surface_a in names or rec.surface_b in names:
+            moved = True
             try:
                 refresh_record_frames(bpy.context, rec)
+            except Exception:
+                pass
+        elif moved:
+            # a cut after a moved one: the moved surface may divide its face differently
+            try:
+                refresh_record_frames(bpy.context, rec, rebuild=False)
             except Exception:
                 pass
     return None
@@ -2003,6 +2422,62 @@ def depsgraph_handler(scene, depsgraph):
                     changed = True
     if changed and not bpy.app.timers.is_registered(_refresh_dirty):
         bpy.app.timers.register(_refresh_dirty, first_interval=0.05)
+    # a connector moved by hand: the cuts after it keep their own clear of its socket
+    for rec in settings.cuts:
+        for name in (rec.pin_a, rec.pin_b, *(e.pin for e in rec.extras)):
+            obj = bpy.data.objects.get(name) if name else None
+            if obj is None:
+                continue
+            cur = flat(obj.matrix_basis)
+            old = obj.get("esp_mw")
+            if old is None or any(abs(a - b) > 1e-6 for a, b in zip(cur, old)):
+                obj["esp_mw"] = cur
+                if old is not None:
+                    schedule_cuts_after(rec)
+
+
+# cuts whose connectors changed: the divided cuts after them are measured again shortly
+_pending_after = set()
+
+
+def schedule_cuts_after(rec):
+    """Measure the divided cuts after `rec` again once its settings stop changing.
+
+    Debounced: a width slider being dragged changes the record dozens of times a second,
+    and every cut after it with an extra connector would be measured again each time.
+    """
+    settings = bpy.context.scene.esp if bpy.context.scene is not None else None
+    if settings is None:
+        return
+    names = [r.name for r in settings.cuts]
+    if rec.name not in names:
+        return
+    later = settings.cuts[names.index(rec.name) + 1 :]
+    if not any(r.region >= 0 or len(r.extras) for r in later):
+        return
+    _pending_after.add(rec.name)
+    if not bpy.app.timers.is_registered(_refresh_pending_after):
+        bpy.app.timers.register(_refresh_pending_after, first_interval=0.3)
+
+
+def _refresh_pending_after():
+    scene = bpy.context.scene
+    names = set(_pending_after)
+    _pending_after.clear()
+    if scene is None:
+        return None
+    settings = scene.esp
+    order = [r.name for r in settings.cuts]
+    first = min((order.index(n) for n in names if n in order), default=None)
+    if first is None:
+        return None
+    for rec in list(settings.cuts)[first + 1 :]:
+        if rec.region >= 0 or len(rec.extras):
+            try:
+                refresh_record_frames(bpy.context, rec, rebuild=False)
+            except Exception:
+                pass
+    return None
 
 
 def register():
@@ -2013,4 +2488,7 @@ def register():
 def unregister():
     if depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(depsgraph_handler)
+    for timer in (_refresh_dirty, _refresh_pending_after):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     section.free_cache()

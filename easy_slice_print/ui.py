@@ -293,6 +293,12 @@ class ESP_PT_plan(ESPPanel, bpy.types.Panel):
                 row.operator("esp.select_pin", text="2nd", icon='RESTRICT_SELECT_OFF').index = 1
             row.operator("esp.reset_pin", text="Reset", icon='LOOP_BACK')
             box.label(text="Tab into the connector to reshape it; Build follows it", icon='INFO')
+            if len(rec.extras):
+                n = len(rec.extras)
+                box.label(
+                    text=f"+{n} connector{'s' if n > 1 else ''} on the other part{'s' if n > 1 else ''} it crosses",
+                    icon='MOD_ARRAY',
+                )
         if s.built:
             row = layout.row(align=True)
             row.scale_y = 1.2
@@ -324,6 +330,15 @@ class ESP_PT_pin_adjust(ESPPanel, bpy.types.Panel):
                 continue
             if len(names) > 1:
                 layout.label(text=f"Contact {i + 1}")
+            col = layout.column(align=True)
+            col.prop(pin, "location")
+            col.prop(pin, "rotation_euler", text="Rotation")
+            col.prop(pin, "scale")
+        for j, e in enumerate(rec.extras):
+            pin = bpy.data.objects.get(e.pin)
+            if pin is None:
+                continue
+            layout.label(text=f"Connector on part {j + 2}")
             col = layout.column(align=True)
             col.prop(pin, "location")
             col.prop(pin, "rotation_euler", text="Rotation")

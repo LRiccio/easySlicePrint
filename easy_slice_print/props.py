@@ -204,10 +204,31 @@ def connector_props(update=None):
     }
 
 
+def _record_enabled_update(self, context):
+    """A cut switched in or out of the build changes how the cuts after it divide the parts."""
+    from . import plan
+
+    plan.refresh_cuts_after(context, self)
+
+
+class ESP_ExtraPin(bpy.types.PropertyGroup):
+    """A connector of a cut on another part it crosses (see `plan.record_regions`)."""
+
+    pin: StringProperty()
+    pin_auto: FloatVectorProperty(size=16, default=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1))
+    center: FloatVectorProperty(size=3)
+    normal: FloatVectorProperty(size=3, default=(0, 0, 1))
+    inscribed: FloatProperty(default=1.0)
+    depth: FloatProperty(default=0.0)
+    region: IntProperty(default=-1)
+
+
 class ESP_CutRecord(bpy.types.PropertyGroup):
     name: StringProperty(name="Name", default="Cut")
     cut_type: EnumProperty(name="Type", items=TOOL_ITEMS, default='STRAIGHT')
-    enabled: BoolProperty(name="Ready", default=True, description="Include this cut in the build")
+    enabled: BoolProperty(
+        name="Ready", default=True, description="Include this cut in the build", update=_record_enabled_update
+    )
     show: BoolProperty(
         name="Show", default=True, description="Show the cut preview in the viewport", update=_record_show_update
     )
@@ -231,6 +252,10 @@ class ESP_CutRecord(bpy.types.PropertyGroup):
     anchor: FloatVectorProperty(
         size=3, description="World point on the model used to pick the part this cut applies to"
     )
+    # an earlier cut of the plan divides this cut's face: the stretch of it the main
+    # connector is on (-1: not divided), and one more connector for every other stretch
+    region: IntProperty(default=-1)
+    extras: CollectionProperty(type=ESP_ExtraPin)
     built: BoolProperty(default=False)
 
 
@@ -378,7 +403,7 @@ class ESP_Settings(bpy.types.PropertyGroup):
 ESP_Settings.__annotations__.update(connector_props(update=_settings_update))
 
 
-CLASSES = (ESP_CutRecord, ESP_Settings)
+CLASSES = (ESP_ExtraPin, ESP_CutRecord, ESP_Settings)
 
 
 def register():
