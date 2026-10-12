@@ -23,6 +23,13 @@ All notable changes to this project are documented here. The format follows
   pin, and as long as the build will make them. They can be moved like any connector, and the
   Build makes them where they are left. Changing or moving an earlier cut's connector updates
   the cuts after it a moment later.
+- **A warning for thin walls round a socket.** A socket is a hole, and where it runs close to the
+  outside of the part, to another cut or to another socket, the wall between them prints as a
+  skin that splits, or not at all. Every connector of the plan is now measured all over its
+  socket, and the Connector panel says when one leaves less than *Minimum Wall* (a new printer
+  preference, 0.8 mm by default) — with the thickness left and what it is against — or when the
+  socket breaks out of the part or runs into another cut; the cut list marks those cuts too. The
+  order of the cuts does not matter: a later cut sliced past an earlier socket is caught as well.
 
 ### Fixed
 - **A connector with more than one lobe gets the clearance it asked for.** The socket was grown

@@ -21,6 +21,13 @@ def _solver_items(self, context):
     return items
 
 
+def _min_wall_update(self, context):
+    """The walls are stored measured; only the warnings change. Redraw them."""
+    from . import overlay
+
+    overlay.redraw()
+
+
 class ESP_Preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -55,11 +62,28 @@ class ESP_Preferences(bpy.types.AddonPreferences):
         step=1,
     )
 
+    min_wall_mm: FloatProperty(
+        name="Minimum Wall",
+        description=(
+            "The thinnest wall your printer prints reliably - two perimeters of the nozzle, "
+            "0.8 mm for a 0.4 mm nozzle. A planned connector whose socket leaves less material "
+            "than this round it, against the outside of the part or another cut, is flagged in "
+            "the Connector panel with the thickness that is left"
+        ),
+        default=0.8,
+        min=0.0,
+        soft_max=3.0,
+        precision=2,
+        step=5,
+        update=_min_wall_update,
+    )
+
     def draw(self, context):
         layout = self.layout
         box = layout.box()
         box.label(text="Printer profile", icon='TOOL_SETTINGS')
         box.prop(self, "printer_clearance_mm")
+        box.prop(self, "min_wall_mm")
         box.label(text="Print a test joint once, then leave it alone.", icon='INFO')
         layout.prop(self, "solver")
         layout.prop(self, "unit_mode")

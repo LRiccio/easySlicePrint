@@ -22,6 +22,8 @@ class ESP_UL_cuts(bpy.types.UIList):
             row.label(text="", icon='MOD_MIRROR')
         if item.built:
             row.label(text="", icon='CHECKMARK')
+        elif plan.record_thin_walls(context, item):
+            row.label(text="", icon='ERROR')
         row.prop(item, "enabled", text="")
         row.prop(item, "show", text="", icon='HIDE_OFF' if item.show else 'HIDE_ON', emboss=False)
         op = row.operator("esp.delete_cut", text="", icon='X', emboss=False)
@@ -147,6 +149,17 @@ def _depth_note(layout, context, rec):
                 layout.label(text=f"{where}height cut to {max(limit, 0.0) / u:.1f} mm by the part's depth", icon='INFO')
 
 
+def _wall_note(layout, context, rec):
+    """Say so when a socket leaves too thin a wall, with the thickness left and against what."""
+    for where, wall, near in plan.record_thin_walls(context, rec):
+        where = f"{where}: " if where else ""
+        if wall <= 0.0:
+            text = f"socket runs into {near}" if near else "socket breaks out of the part"
+        else:
+            text = f"socket wall only {wall:.2f} mm" + (f", against {near}" if near else "")
+        layout.label(text=where + text, icon='ERROR')
+
+
 class ESP_PT_connector(ESPPanel, bpy.types.Panel):
     bl_label = "Connector"
     bl_parent_id = "ESP_PT_main"
@@ -174,6 +187,8 @@ class ESP_PT_connector(ESPPanel, bpy.types.Panel):
         row.prop(src, "pin_height_mm")
         if is_record:
             _depth_note(col, context, src)
+            if src.add_pin:
+                _wall_note(col, context, src)
         row = col.row(align=True)
         row.prop(src, "pin_side", expand=True)
         if is_record:

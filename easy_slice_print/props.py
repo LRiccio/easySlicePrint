@@ -94,6 +94,13 @@ def _record_show_update(self, context):
     overlay.redraw()  # the failure map on this surface goes and comes with it
 
 
+def _walls_update(self, context):
+    """A setting that changes only the socket, not the pin: just the walls to measure again."""
+    from . import plan
+
+    plan.schedule_walls()
+
+
 def _active_update(self, context):
     from . import plan
 
@@ -160,6 +167,7 @@ def connector_props(update=None):
             soft_max=5.0,
             precision=3,
             step=1,
+            update=_walls_update,
         ),
         'fit_preset': EnumProperty(
             name="Fit",
@@ -190,6 +198,7 @@ def connector_props(update=None):
             name="Asymmetric Tip",
             default=True,
             description="Make the socket deeper than the pin so the pin never bottoms out (adds Tip Extra at the tip)",
+            update=_walls_update,
         ),
         'tip_extra_mm': FloatProperty(
             name="Tip Extra",
@@ -199,6 +208,7 @@ def connector_props(update=None):
             soft_max=5.0,
             precision=3,
             step=1,
+            update=_walls_update,
         ),
         'pin_side': EnumProperty(name="Pin Side", items=SIDE_ITEMS, default='A', update=update),
     }

@@ -11,6 +11,7 @@ from bpy.app.handlers import persistent
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
+from . import overlay
 from .core import connectors, cutting, mesh_utils, section, surfaces
 from .core.units import mm_to_bu
 from .props import connector_props
@@ -343,6 +344,13 @@ def migrate_file():
 @persistent
 def load_post_handler(_filepath):
     migrate_file()
+    schedule_walls()
+
+
+@persistent
+def undo_redo_handler(scene, *_args):
+    """An undo brings back the walls stored before the step, measured on older geometry."""
+    schedule_walls()
 
 
 def _migrate_after_register():
@@ -1524,6 +1532,7 @@ def add_record(context, target, cut_type, contacts):
         settings.active_cut = len(settings.cuts) - 1
     finally:
         _suspend -= 1
+    schedule_walls()
     return rec
 
 
@@ -1531,6 +1540,7 @@ def on_record_settings_changed(context, rec):
     global _suspend
     if _suspend:
         return
+    schedule_walls()
     _suspend += 1
     try:
         apply_preset(context, rec)
@@ -1597,6 +1607,7 @@ def reset_pins(context, rec):
     """
     global _suspend
     _suspend += 1
+    schedule_walls()
     try:
         for i in range(contact_count(rec)):
             pin = pin_of(rec, i)
@@ -2001,6 +2012,7 @@ def sync_extra_pins(context, rec, items, target):
 def refresh_cuts_after(context, rec):
     """Measure again every cut after `rec`: how earlier cuts divide their faces changed."""
     settings = context.scene.esp
+    schedule_walls()  # a cut in or out of the build is a wall more or less for every socket
     after = False
     for other in settings.cuts:
         if after:
@@ -2014,6 +2026,7 @@ def refresh_cuts_after(context, rec):
 
 def refresh_record_frames(context, rec, rebuild=True):
     """Re-estimate centre/normal/size from the (possibly edited) cut surfaces."""
+    schedule_walls()
     target = record_target(context, rec)
     if target is None:
         return
@@ -2102,6 +2115,7 @@ def remove_record(context, index):
     if not (0 <= index < len(settings.cuts)):
         return
     rec = settings.cuts[index]
+    schedule_walls()
     for obj in record_objects(rec):
         mesh_utils.remove_object(obj)
     settings.cuts.remove(index)
@@ -2362,6 +2376,270 @@ def fit_preview(context, rec, matrix, layout, regions=None):
     return matrix if k >= 1.0 else matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))
 
 
+# ----------------------------------------------------------------------------
+# the wall left round a socket
+# ----------------------------------------------------------------------------
+# A socket is a hole: where it runs close to the outside of the part, or to another
+# cut or socket, the wall between them prints as a skin that splits or never prints.
+# Each connector preview carries the thinnest wall measured round its socket, and
+# what that wall is against; the panel warns below the Minimum Wall preference.
+WALL_KEY = "esp_wall_mm"  # thinnest wall round the socket (mm); 0 = it breaks out
+WALL_NEAR_KEY = "esp_wall_near"  # against what: "" the outside of the part, else a cut or connector
+WALL_CAP_MM = 5.0  # walls thicker than this are not measured further
+WALL_TOLERANCE_MM = 0.05  # a wall the add-on itself leaves at the minimum is not flagged
+
+
+def min_wall_mm(context):
+    """The thinnest wall this printer prints reliably, from the preferences."""
+    return pref(context, "min_wall_mm", 0.8)
+
+
+def thin_wall(context, pin):
+    """(wall in mm, what it is against) when `pin`'s socket leaves too thin a wall, else None."""
+    if pin is None:
+        return None
+    wall = pin.get(WALL_KEY)
+    if wall is None or wall >= min_wall_mm(context) - WALL_TOLERANCE_MM:
+        return None
+    return float(wall), str(pin.get(WALL_NEAR_KEY, ""))
+
+
+def record_thin_walls(context, rec):
+    """[(label, wall mm, against)] for every connector of `rec` with too thin a wall."""
+    if not rec.add_pin:
+        return []
+    out = []
+    for i in range(contact_count(rec)):
+        found = thin_wall(context, pin_of(rec, i))
+        if found is not None:
+            out.append((f"Contact {i + 1}" if rec.two_contact else "", *found))
+    for j, e in enumerate(rec.extras):
+        found = thin_wall(context, extra_pin_of(e))
+        if found is not None:
+            out.append((f"Connector on part {j + 2}", *found))
+    return out
+
+
+def socket_room(context, rec):
+    """How much bigger than its pin a record's socket is: (per side, at the tip), BU."""
+    u = mm(context)
+    return rec.clearance_mm * u, (rec.tip_extra_mm * u if rec.asymmetric else 0.0)
+
+
+def socket_bmesh(context, rec, pin):
+    """The hole preview `pin` leaves (world), as a bmesh the caller frees; None without a pin.
+
+    The socket is the shape the build carves - the pin's own mesh, grown by the
+    clearance and the tip extra - and only its half in the socket part is a hole: the
+    other half is the pin's root, inside the material of the pin part, and a socket of
+    another cut running into a root runs into solid material.
+    """
+    me = pin_unit_mesh(pin)
+    if me is None:
+        return None
+    side, tip = socket_room(context, rec)
+    matrix = pin.matrix_basis.copy()
+    bm = connectors.connector_bmesh(None, None, matrix, side, tip, unit_mesh=me)
+    bmesh.ops.bisect_plane(
+        bm,
+        geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
+        dist=1e-7,
+        plane_co=matrix.translation,
+        plane_no=matrix.col[2].xyz.normalized(),
+        clear_inner=True,
+    )
+    return bm
+
+
+def _segment_points(p, q, step, ends=True):
+    n = max(1, math.ceil((q - p).length / step))
+    first, last = (0, n + 1) if ends else (1, n)
+    return [p.lerp(q, k / n) for k in range(first, last)]
+
+
+def _triangle_points(a, b, c, step):
+    """Points over triangle abc, about `step` apart: its edges, then rows across it.
+
+    The rows run along the longest edge, so a long thin face - the side of a round pin -
+    gets its edges and little else, instead of a grid of the long edge squared.
+    """
+    edges = sorted(((a, b, c), (b, c, a), (c, a, b)), key=lambda e: -(e[1] - e[0]).length)
+    p, q, apex = edges[0]
+    pts = _segment_points(p, q, step) + _segment_points(q, apex, step, False) + _segment_points(apex, p, step, False)
+    pts.append(apex)
+    base = (q - p).length
+    if base < 1e-12:
+        return pts
+    height = (q - p).cross(apex - p).length / base
+    rows = int(height / step)
+    for k in range(1, rows + 1):
+        t = k / (rows + 1)
+        pts += _segment_points(p.lerp(apex, t), q.lerp(apex, t), step, False)
+    return pts
+
+
+def socket_samples(context, rec, pin, step):
+    """Points on the wall of the hole preview `pin` leaves (world), about `step` apart.
+
+    -> (points, (lo, hi) bounds), or ([], None).
+    """
+    bm = socket_bmesh(context, rec, pin)
+    if bm is None:
+        return [], None
+    try:
+        tris = bmesh.ops.triangulate(bm, faces=bm.faces[:])["faces"]
+        corners = [[v.co.copy() for v in f.verts] for f in tris]
+        bounds = _bounds([v.co for v in bm.verts]) if bm.verts else None
+    finally:
+        bm.free()
+    points = []
+    for a, b, c in corners:
+        points += _triangle_points(a, b, c, step)
+    return points, bounds
+
+
+def _bounds(points):
+    xs, ys, zs = zip(*points)
+    return Vector((min(xs), min(ys), min(zs))), Vector((max(xs), max(ys), max(zs)))
+
+
+def _wall_obstacles(context, settings):
+    """What else a socket's wall can run against: every other cut's surface and socket.
+
+    -> [(object, bvh, room, (lo, hi), record name)]. A cut surface takes half its kerf
+    with it; a socket is measured as the hole it is (`socket_bmesh`). Cuts left out of the build do not
+    count; the order of the cuts does not matter - a later cut passing a socket thins
+    its wall just the same.
+    """
+    out = []
+    u = mm(context)
+    for rec in settings.cuts:
+        if not rec.enabled:
+            continue
+        for i in range(contact_count(rec)):
+            sobj = surface_of(rec, i)
+            if sobj is not None and len(sobj.data.polygons):
+                verts, faces = surface_world_patch(sobj)
+                bvh = mesh_utils.bvh_from_pydata(verts, faces)
+                out.append((sobj, bvh, rec.cut_gap_mm * u * 0.5, _bounds(verts), rec.name))
+        if rec.add_pin:
+            for pin in record_pins(rec):
+                bm = socket_bmesh(context, rec, pin)
+                if bm is None:
+                    continue
+                try:
+                    if not bm.faces:
+                        continue
+                    bounds = _bounds([v.co for v in bm.verts])
+                    bvh = BVHTree.FromBMesh(bm)
+                finally:
+                    bm.free()
+                out.append((pin, bvh, 0.0, bounds, rec.name))
+    return out
+
+
+def socket_wall(context, rec, pin, obstacles=()):
+    """(thinnest wall in BU, what it is against) round the socket of preview `pin`.
+
+    The wall is measured from points all over the socket to the outside of the part
+    (the model the cut was drawn on) and to the other cuts' surfaces and sockets
+    (`obstacles`, see `_wall_obstacles`), capped at WALL_CAP_MM. A point of the socket
+    outside the material is a socket that breaks out: a wall of 0. None when there is
+    nothing to measure.
+    """
+    target = record_target(context, rec)
+    if pin is None or target is None or target.type != 'MESH':
+        return None
+    u = mm(context)
+    cap = WALL_CAP_MM * u
+    step = max(min_wall_mm(context) * u * 0.5, cap * 0.02)
+    points, bounds = socket_samples(context, rec, pin, step)
+    if not points:
+        return None
+    best, near = cap, ""
+    own = set(record_objects(rec))
+    lo, hi = bounds
+    lo, hi = lo - Vector((cap,) * 3), hi + Vector((cap,) * 3)
+    for obj, bvh, room, (olo, ohi), name in obstacles:
+        if obj in own and obj.get("esp_preview") == 'surface':
+            continue  # the cut's own face is where the socket opens
+        if obj == pin or any(olo[k] > hi[k] or ohi[k] < lo[k] for k in range(3)):
+            continue
+        label = "another connector of this cut" if obj in own else name
+        for p in points:
+            loc, _nor, _i, dist = bvh.find_nearest(p, best + room)
+            if loc is not None and dist - room < best:
+                best, near = max(dist - room, 0.0), label
+    state = ensure_evaluable(target)
+    try:
+        bvh = _model_bvh(target, context.evaluated_depsgraph_get())
+        if bvh is not None:
+            mw = target.matrix_world.copy()
+            inv = mw.inverted_safe()
+            nmat = inv.to_3x3().transposed()
+            reach = best / max(min(abs(c) for c in mw.to_scale()), 1e-9)
+            for p in points:
+                loc, nor, _i, _d = bvh.find_nearest(inv @ p, reach)
+                if loc is None:
+                    continue
+                loc_w = mw @ loc
+                gap = p - loc_w
+                wall = 0.0 if gap.dot(nmat @ nor) > 0.0 else gap.length
+                if wall < best:
+                    best, near = wall, ""
+                    if wall <= 0.0:
+                        break
+    finally:
+        restore_visibility(target, state)
+    return best, near
+
+
+def measure_walls(context, rec, obstacles=None):
+    """Store on every connector preview of `rec` the wall left round its socket."""
+    if obstacles is None:
+        obstacles = _wall_obstacles(context, context.scene.esp)
+    u = mm(context)
+    for pin in record_pins(rec):
+        found = socket_wall(context, rec, pin, obstacles) if rec.add_pin and rec.enabled else None
+        if found is None:
+            for key in (WALL_KEY, WALL_NEAR_KEY):
+                if key in pin:
+                    del pin[key]
+            continue
+        wall, near = found
+        pin[WALL_KEY] = round(wall / u, 3)
+        pin[WALL_NEAR_KEY] = near
+
+
+def measure_all_walls(context):
+    settings = context.scene.esp
+    obstacles = _wall_obstacles(context, settings)
+    for rec in settings.cuts:
+        measure_walls(context, rec, obstacles)
+
+
+def schedule_walls():
+    """Measure every socket's wall again once the plan stops changing.
+
+    Every record shares the walls: a cut moved, or a connector made wider, can thin
+    the wall of a socket of any other cut. Debounced like `schedule_cuts_after`.
+    """
+    if not bpy.app.timers.is_registered(_refresh_walls):
+        bpy.app.timers.register(_refresh_walls, first_interval=0.3)
+
+
+def _refresh_walls():
+    scene = bpy.context.scene
+    if scene is None or not len(scene.esp.cuts) or scene.esp.built:
+        return None
+    try:
+        measure_all_walls(bpy.context)
+    except Exception:
+        pass
+    overlay.redraw()
+    return None
+
+
 def crossing_threshold(context, rec, spec):
     """How deep in a part the cut face must run for the part to count as crossed."""
     grown = max(
@@ -2522,6 +2800,7 @@ def depsgraph_handler(scene, depsgraph):
                 if old is not None:
                     _dirty[obj.name] = tuple(cur)
                     changed = True
+                    schedule_walls()
     if changed and not bpy.app.timers.is_registered(_refresh_dirty):
         bpy.app.timers.register(_refresh_dirty, first_interval=0.05)
     # a connector moved by hand: the cuts after it keep their own clear of its socket
@@ -2533,6 +2812,7 @@ def depsgraph_handler(scene, depsgraph):
                 obj["esp_mw"] = cur
                 if old is not None:
                     schedule_cuts_after(rec)
+                    schedule_walls()
 
 
 # cuts whose connectors changed: the divided cuts after them are measured again shortly
@@ -2584,6 +2864,9 @@ def register():
         bpy.app.handlers.depsgraph_update_post.append(depsgraph_handler)
     if load_post_handler not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(load_post_handler)
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if undo_redo_handler not in handlers:
+            handlers.append(undo_redo_handler)
     # bpy.data is out of reach while add-ons register: the file open now is brought
     # over as soon as Blender is running
     if not bpy.app.timers.is_registered(_migrate_after_register):
@@ -2595,7 +2878,10 @@ def unregister():
         bpy.app.handlers.depsgraph_update_post.remove(depsgraph_handler)
     if load_post_handler in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(load_post_handler)
-    for timer in (_refresh_dirty, _refresh_pending_after, _migrate_after_register):
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if undo_redo_handler in handlers:
+            handlers.remove(undo_redo_handler)
+    for timer in (_refresh_dirty, _refresh_pending_after, _migrate_after_register, _refresh_walls):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
     section.free_cache()

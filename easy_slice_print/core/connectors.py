@@ -230,14 +230,8 @@ def unit_layout_bmesh(shape, custom_obj=None, offsets=None):
     return bm
 
 
-def connector_mesh(shape, custom_obj, matrix, name, radial_extra=0.0, tip_extra=0.0, unit_mesh=None, offsets=None):
-    """World space connector mesh. Extras (in BU) grow the shape for the socket.
-
-    `unit_mesh` is the already built unit shape to use - the preview pin's own mesh -
-    and it wins over `shape`/`custom_obj`, which only describe how to build one.
-    `offsets` repeats a built shape at several unit-space (x, y) positions (Quick mode
-    with more than one connector; a preview pin already carries its copies).
-    """
+def connector_bmesh(shape, custom_obj, matrix, radial_extra=0.0, tip_extra=0.0, unit_mesh=None, offsets=None):
+    """`connector_mesh` as a bmesh, with no data-block made (the caller frees it)."""
     if unit_mesh is not None:
         bm = unit_bmesh_from_mesh(unit_mesh)
     else:
@@ -251,6 +245,18 @@ def connector_mesh(shape, custom_obj, matrix, name, radial_extra=0.0, tip_extra=
     bmesh.ops.transform(bm, matrix=matrix, verts=bm.verts)
     if matrix.is_negative:  # a mirrored matrix (`flip_matrix`) turns the faces inside out
         bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    return bm
+
+
+def connector_mesh(shape, custom_obj, matrix, name, radial_extra=0.0, tip_extra=0.0, unit_mesh=None, offsets=None):
+    """World space connector mesh. Extras (in BU) grow the shape for the socket.
+
+    `unit_mesh` is the already built unit shape to use - the preview pin's own mesh -
+    and it wins over `shape`/`custom_obj`, which only describe how to build one.
+    `offsets` repeats a built shape at several unit-space (x, y) positions (Quick mode
+    with more than one connector; a preview pin already carries its copies).
+    """
+    bm = connector_bmesh(shape, custom_obj, matrix, radial_extra, tip_extra, unit_mesh, offsets)
     me = mesh_utils.bmesh_to_mesh(bm, name)
     bm.free()
     return me

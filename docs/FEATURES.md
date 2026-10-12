@@ -37,6 +37,7 @@ below is an original implementation; nothing was copied.
 | Built-in + custom connector shapes | Cylinder, Tapered, Hexagon, Box + `ESP_Connectors` library (unit-box convention) | `core/connectors.py` |
 | Printed parts that actually fit together | *Printer Clearance* set once per printer in the preferences; each cut picks Press / Snug / Easy / Loose / Custom, and the panel shows how much wider the socket comes out | `ESP_Preferences.printer_clearance_mm`, `plan.apply_fit` |
 | Clearance, asymmetric tip, tip extra | **Fit & Clearance** sub-panel | `ESP_PT_fit` |
+| Warning about thin walls round a socket | the Connector panel names every connector whose socket leaves less than *Minimum Wall* (preferences, 0.8 mm) of material round it - to the outside of the part, another cut or another socket - with the thickness left, or says the socket breaks out; the cut list shows a warning icon | `plan.socket_wall`, `ESP_Preferences.min_wall_mm` |
 | Pin on side A or B, swap | *Pin Side* + **Swap** | `ESP_OT_swap_pin_side` |
 | Move/rotate/scale the pin manually, reset | **Select Connector** (G/R/S) / **Manual Connector Adjust** panel / **Reset** | `ESP_OT_select_pin`, `ESP_PT_pin_adjust`, `ESP_OT_reset_pin` |
 | Cut gap / kerf in mm | *Cut Gap* → kerf slab subtracted before splitting | `surfaces.slab_from_patch` |

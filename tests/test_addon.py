@@ -1049,6 +1049,89 @@ def test_a_file_saved_with_names_opens_with_its_plan():
     check(plan.migrate_file() is False, "a second pass finds nothing to bring over")
 
 
+def test_a_thin_socket_wall_is_flagged():
+    """A socket that leaves too little material round it says so, and how much is left."""
+    print("== a thin socket wall is flagged")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    slab = make_slab("Plank", size=(60.0, 10.0, 40.0))  # 10 mm thick
+    rec = plan.add_record(bpy.context, slab, 'STRAIGHT', [section_contact(slab, 0.0)])
+    plan.measure_all_walls(bpy.context)
+    check(not plan.record_thin_walls(bpy.context, rec), "a preset pin keeps a wall the printer can print")
+    wall = rec.pin_obj_a.get(plan.WALL_KEY)
+    check(wall is not None and wall >= 0.8 - plan.WALL_TOLERANCE_MM, f"and its wall is measured ({wall})")
+
+    rec.size_preset = 'CUSTOM'
+    rec.pin_width_mm = 9.0  # 0.5 mm each side, less the clearance
+    rec.pin_height_mm = 6.0
+    plan.measure_all_walls(bpy.context)
+    expect = 0.5 - rec.clearance_mm
+    found = plan.record_thin_walls(bpy.context, rec)
+    check(len(found) == 1, f"a 9 mm pin in a 10 mm plank is flagged ({found})")
+    if found:
+        _where, wall, near = found[0]
+        check(abs(wall - expect) < 0.06 and near == "", f"with the wall left: {wall:.2f} mm, not {expect:.2f}")
+    draw_all_panels(bpy.context)  # the note and the list icon draw
+
+    rec.pin_width_mm = 6.0
+    rec.pin_obj_a.location.y += 3.0  # moved by hand, half out of the plank
+    plan.measure_all_walls(bpy.context)
+    found = plan.record_thin_walls(bpy.context, rec)
+    check(found and found[0][1] == 0.0, f"a socket off the edge breaks out ({found})")
+    plan.reset_pins(bpy.context, rec)
+
+    # another cut passing close to the socket thins its wall just the same
+    x = rec.pin_obj_a.matrix_world.translation.x + 3.6  # 0.6 mm past the 6 mm pin
+    co, no = Vector((x, 0.0, 10.0)), Vector((1.0, 0.0, 0.0))
+    d = plan.ContactData('STRAIGHT')
+    d.plane_co, d.plane_no, d.center_hint, d.anchor = co, no, co, co
+    plan.fill_straight_contact(d, plan.straight_section(bpy.context, slab, co, no, None, co), None)
+    s.add_pin = False  # only its surface near the socket
+    other = plan.add_record(bpy.context, slab, 'STRAIGHT', [d])
+    plan.measure_all_walls(bpy.context)
+    found = plan.record_thin_walls(bpy.context, rec)
+    expect = 0.6 - rec.clearance_mm - other.cut_gap_mm * 0.5
+    check(len(found) == 1 and found[0][2] == other.name, f"the wall is against the other cut ({found})")
+    if found:
+        check(abs(found[0][1] - expect) < 0.06, f"{found[0][1]:.2f} mm left, not {expect:.2f}")
+    other.enabled = False
+    plan.measure_all_walls(bpy.context)
+    check(not plan.record_thin_walls(bpy.context, rec), "a cut left out of the build is not in the way")
+
+    # a later cut across an earlier one: its socket running through the earlier pin's root
+    # runs through solid material, and is fine; the later cut slicing past the earlier
+    # socket opens it
+    for z, flagged in ((10.0, False), (0.0, True)):
+        sc = reset_scene()
+        sc.esp.mode = 'PLAN'
+        box = make_slab("Box", size=(40.0, 20.0, 60.0))
+        d = plan.ContactData('STRAIGHT')
+        co, no = Vector((0, 0, 0)), Vector((1, 0, 0))
+        d.plane_co, d.plane_no, d.center_hint, d.anchor = co, no, co, co
+        plan.fill_straight_contact(d, plan.straight_section(bpy.context, box, co, no, None, co), None)
+        first = plan.add_record(bpy.context, box, 'STRAIGHT', [d])
+        later = plan.add_record(bpy.context, box, 'STRAIGHT', [section_contact(box, z)])
+        plan.measure_all_walls(bpy.context)
+        check(not plan.record_thin_walls(bpy.context, later), f"z={z:.0f}: the later cut's sockets are fine")
+        found = plan.record_thin_walls(bpy.context, first)
+        low = first.pin_obj_a.matrix_world.translation.z + first.pin_obj_a.matrix_world.to_scale().x * 0.5
+        what = f"z={z:.0f}: the earlier socket, reaching z={low:.2f}"
+        if flagged:
+            check(found and found[0][1] == 0.0 and found[0][2] == later.name, f"{what}, runs into the cut ({found})")
+        else:
+            check(not found, f"{what}, keeps its wall ({found})")
+    draw_all_panels(bpy.context)
+
+    # the measurement follows the plan by itself, a moment after a change
+    if bpy.app.timers.is_registered(plan._refresh_walls):
+        bpy.app.timers.unregister(plan._refresh_walls)
+    later.enabled = False
+    check(bpy.app.timers.is_registered(plan._refresh_walls), "a change schedules the walls")
+    plan._refresh_walls()
+    check(not plan.record_thin_walls(bpy.context, first), "and they are measured again")
+
+
 def test_a_cut_across_earlier_cuts_cuts_every_part():
     """A later cut runs across every part an earlier cut of the same plan made.
 
@@ -1757,6 +1840,7 @@ if __name__ == "__main__":
     test_a_built_plan_is_not_edited_blind()
     test_the_plan_holds_its_objects_by_pointer()
     test_a_file_saved_with_names_opens_with_its_plan()
+    test_a_thin_socket_wall_is_flagged()
     test_a_cut_across_earlier_cuts_cuts_every_part()
     test_base_split_preview_points_like_the_build()
     test_the_preview_shows_every_connector_a_build_makes()
