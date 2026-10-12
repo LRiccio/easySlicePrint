@@ -71,6 +71,20 @@ def mm(context):
     return mm_to_bu(context.scene, prefs(context))
 
 
+def min_wall_mm(context):
+    """The thinnest wall this printer prints reliably, from the preferences.
+
+    It is the material the add-on leaves round every socket it places - to the outside
+    of the part, to another cut, between two sockets - and past the tip of every pin it
+    sizes; a wall thinner than this is flagged (`thin_wall`).
+    """
+    return pref(context, "min_wall_mm", 0.8)
+
+
+def min_wall_bu(context):
+    return min_wall_mm(context) * mm(context)
+
+
 # ----------------------------------------------------------------------------
 # collections
 # ----------------------------------------------------------------------------
@@ -1155,43 +1169,57 @@ def contact_frame(
         restore_visibility(target, state)
 
 
+# The narrowest pin a preset makes.
+PIN_MIN_WIDTH_MM = 1.0
+
+
 def preset_size_mm(context, preset, inscribed_bu):
     factor = connectors.preset_factor(preset)
-    width_mm = max(1.0, inscribed_bu * factor / mm(context))
+    width_mm = max(PIN_MIN_WIDTH_MM, inscribed_bu * factor / mm(context))
     return width_mm, width_mm * connectors.HEIGHT_RATIO
+
+
+def socket_wall_room(context, src, inscribed_bu):
+    """The widest pin whose socket leaves Minimum Wall to the edge of a circle this wide."""
+    return inscribed_bu - 2.0 * (src.clearance_mm * mm(context) + min_wall_bu(context))
 
 
 def contact_size_bu(context, src, inscribed_bu, depth_bu=0.0):
     """(width, height) in BU for a settings source (record or scene defaults).
 
+    `inscribed_bu` is the room on the face: the widest circle that fits there. A preset
+    pin takes its share of it, but no more than leaves Minimum Wall round its socket -
+    the socket is the clearance wider than the pin on each side - so a small face gets a
+    thinner pin instead of a wall that splits. The pin keeps its proportions.
+
     A preset pin is also kept shorter than the material is deep (`depth_limit_bu`): it
     reaches `height` into both parts, and on a cut close to an end of the model a pin
-    sized from the face alone came out through the far side. A Custom height is left as
-    typed; the panel warns when it is too long.
+    sized from the face alone came out through the far side. A Custom size is left as
+    typed; the panel warns when it is too long, or leaves too thin a wall.
     """
+    u = mm(context)
     if src.size_preset == 'CUSTOM':
-        return src.pin_width_mm * mm(context), src.pin_height_mm * mm(context)
-    w_mm, h_mm = preset_size_mm(context, src.size_preset, inscribed_bu)
-    w, h = w_mm * mm(context), h_mm * mm(context)
+        return src.pin_width_mm * u, src.pin_height_mm * u
+    w_mm, _h_mm = preset_size_mm(context, src.size_preset, inscribed_bu)
+    w = min(w_mm * u, max(socket_wall_room(context, src, inscribed_bu), PIN_MIN_WIDTH_MM * u))
+    h = w * connectors.HEIGHT_RATIO
     limit = depth_limit_bu(context, src, depth_bu)
     if limit is not None and h > limit:
         h = max(limit, DEPTH_MIN_PIN_MM * mm(context))
     return w, h
 
 
-# Material left beyond the tip of a pin or the bottom of its socket (mm), and the shortest
-# pin a preset makes on a part too shallow for anything longer.
-DEPTH_WALL_MM = 0.8
+# The shortest pin a preset makes on a part too shallow for anything longer.
 DEPTH_MIN_PIN_MM = 0.5
 
 
 def depth_limit_bu(context, src, depth_bu):
-    """Longest pin the material allows: the depth less the socket's tip extra and a wall."""
+    """Longest pin the material allows: the depth less the socket's tip extra and Minimum Wall."""
     if depth_bu <= 0.0:
         return None
     u = mm(context)
     tip = src.tip_extra_mm * u if src.asymmetric else 0.0
-    return depth_bu - tip - DEPTH_WALL_MM * u
+    return depth_bu - tip - min_wall_bu(context)
 
 
 def contact_depth(context, target, center, normal):
@@ -1259,15 +1287,17 @@ class PinLayout:
 
 # A preset sized pin may shrink this far to fit the count asked for; a Custom one never does.
 LAYOUT_SHRINK = (1.0, 0.85, 0.72, 0.6, 0.5)
-# Material kept round every socket: a share of the pin radius, but never under this (mm).
+# Material kept round every socket: a share of the pin radius, but never under Minimum Wall.
 LAYOUT_RIM_RATIO = 0.5
-LAYOUT_RIM_MIN_MM = 0.8
 
 _layout_cache = {}
 
 
 def _line_layout(center, x_axis, inscribed, count, r, rim):
-    """Fallback for a surface that is not the real cut face: a row across the inscribed circle."""
+    """Fallback for a surface that is not the real cut face: a row across the inscribed circle.
+
+    `r` is the radius of a socket, `rim` the material kept round it.
+    """
     half = inscribed * 0.5 - r - rim
     if half <= 0.0:
         return []
@@ -1305,6 +1335,8 @@ def compute_layout(
         tuple(round(c, 6) for c in normal),
         round(inscribed, 6),
         round(w, 6),
+        round(src.clearance_mm, 6),
+        round(min_wall_mm(context), 6),
         asked,
         src.pin_side,
         scales,
@@ -1333,7 +1365,7 @@ def compute_layout(
             asked,
             scales,
             w,
-            u,
+            (src.clearance_mm * u, min_wall_bu(context)),
             is_cut_face,
             (verts, faces, normal, grown),
             (center, x_axis, y_axis),
@@ -1351,21 +1383,27 @@ def compute_layout(
     return PinLayout(list(found[0]), found[1], asked)
 
 
-def _search_layout(asked, scales, w, u, is_cut_face, patch, frame, inscribed, clearance):
-    """Most pins first, biggest first: the first layout that fits. -> (offsets, scale) or None."""
+def _search_layout(asked, scales, w, walls, is_cut_face, patch, frame, inscribed, clearance):
+    """Most pins first, biggest first: the first layout that fits. -> (offsets, scale) or None.
+
+    `walls` - (socket clearance per side, Minimum Wall) in BU: every socket keeps its rim
+    of material to the edge of the face and to the next socket.
+    """
     verts, faces, normal, grown = patch
     center, x_axis, y_axis = frame
+    gap, wall = walls
     for count in range(asked, 1, -1):
         for k in scales:
             r = w * k * 0.5
-            rim = max(r * LAYOUT_RIM_RATIO, LAYOUT_RIM_MIN_MM * u)
+            rs = r + gap  # the socket
+            rim = max(r * LAYOUT_RIM_RATIO, wall)
             pts = []
             if is_cut_face:
                 pts = section.spread_points(
-                    verts, faces, normal, count, r + rim + grown, 2.0 * r + rim, clearance=clearance
+                    verts, faces, normal, count, rs + rim + grown, 2.0 * rs + rim, clearance=clearance
                 )
             if not pts:
-                pts = _line_layout(center, x_axis, inscribed, count, r, rim)
+                pts = _line_layout(center, x_axis, inscribed, count, rs, rim)
             if pts:
                 size = w * k
                 return [((p - center).dot(x_axis) / size, (p - center).dot(y_axis) / size) for p in pts], k
@@ -1519,8 +1557,8 @@ def add_record(context, target, cut_type, contacts):
         orient_second_contact(context, target, rec)
         rec.anchor = contacts[0].anchor
         extras = place_by_region(context, rec, target)
+        apply_fit(context, rec)  # the clearance first: a preset pin is sized to leave a wall round its socket
         apply_preset(context, rec)
-        apply_fit(context, rec)
         for i in range(len(contacts)):
             layout = record_layout(context, rec, i)
             matrix = auto_pin_matrix(context, rec, i, layout)
@@ -1543,8 +1581,8 @@ def on_record_settings_changed(context, rec):
     schedule_walls()
     _suspend += 1
     try:
+        apply_fit(context, rec)  # the clearance first: a preset pin is sized to leave a wall round its socket
         apply_preset(context, rec)
-        apply_fit(context, rec)
         for i in range(contact_count(rec)):
             pin = pin_of(rec, i)
             if pin is None:
@@ -1902,11 +1940,12 @@ def record_regions(context, rec):
 def pin_fits(context, rec, inscribed):
     """Whether a connector of the record's size fits in a circle of this diameter at all.
 
-    A preset never goes below 1 mm, so a sliver narrower than that has no room for one -
-    the plan shows none there, and the build makes none.
+    It fits when its socket leaves Minimum Wall to the edge. A preset never goes below
+    1 mm, so a sliver too narrow for that and its walls has no room for one - the plan
+    shows none there, and the build makes none.
     """
     w, _h = contact_size_bu(context, rec, inscribed)
-    return w <= inscribed
+    return w <= socket_wall_room(context, rec, inscribed) + 1e-9
 
 
 def place_by_region(context, rec, target):
@@ -2389,11 +2428,6 @@ WALL_CAP_MM = 5.0  # walls thicker than this are not measured further
 WALL_TOLERANCE_MM = 0.05  # a wall the add-on itself leaves at the minimum is not flagged
 
 
-def min_wall_mm(context):
-    """The thinnest wall this printer prints reliably, from the preferences."""
-    return pref(context, "min_wall_mm", 0.8)
-
-
 def thin_wall(context, pin):
     """(wall in mm, what it is against) when `pin`'s socket leaves too thin a wall, else None."""
     if pin is None:
@@ -2616,6 +2650,18 @@ def measure_all_walls(context):
     obstacles = _wall_obstacles(context, settings)
     for rec in settings.cuts:
         measure_walls(context, rec, obstacles)
+
+
+def on_min_wall_changed(context):
+    """Minimum Wall changed in the preferences: every cut sizes and places its connectors again."""
+    scene = getattr(context, "scene", None)
+    if scene is None or getattr(scene, "esp", None) is None or scene.esp.built:
+        return
+    for rec in scene.esp.cuts:
+        try:
+            refresh_record_frames(context, rec, rebuild=False)
+        except Exception:
+            pass
 
 
 def schedule_walls():

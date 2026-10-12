@@ -154,6 +154,15 @@ All notable changes to this project are documented here. The format follows
   surface belongs to the part that carries the pins, by what the material connects, and the
   preview, the pins and the build all follow it. That also fixes a leg cut off by the second
   loop being put in the base's part, with its pin left floating.
+- **Connectors leave the wall the printer needs.** A preset pin took its share of the cut face
+  whatever was left round it: on a narrow face the socket — the clearance wider than the pin —
+  came within a few tenths of a millimetre of the outside. The add-on also left a fixed 0.8 mm
+  past the tip of a pin and between two sockets of a cut, whatever the printer. Now *Minimum
+  Wall*, in the preferences, is the material kept everywhere the add-on sizes or places a
+  connector: round its socket, past its tip and between sockets, measured from the socket
+  rather than the pin. A preset pin on a small face gets thinner to keep it (never under 1 mm),
+  an extra connector is only placed where it fits with its walls, and changing the preference
+  lays every planned connector out again.
 
 ## [0.3.7-alpha] - 2026-09-21
 

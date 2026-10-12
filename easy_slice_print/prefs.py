@@ -22,9 +22,10 @@ def _solver_items(self, context):
 
 
 def _min_wall_update(self, context):
-    """The walls are stored measured; only the warnings change. Redraw them."""
-    from . import overlay
+    """Every planned connector is sized and placed to leave this wall: lay them out again."""
+    from . import overlay, plan
 
+    plan.on_min_wall_changed(context)
     overlay.redraw()
 
 
@@ -66,9 +67,10 @@ class ESP_Preferences(bpy.types.AddonPreferences):
         name="Minimum Wall",
         description=(
             "The thinnest wall your printer prints reliably - two perimeters of the nozzle, "
-            "0.8 mm for a 0.4 mm nozzle. A planned connector whose socket leaves less material "
-            "than this round it, against the outside of the part or another cut, is flagged in "
-            "the Connector panel with the thickness that is left"
+            "0.8 mm for a 0.4 mm nozzle. Connectors are sized and placed to leave at least this "
+            "much material round their sockets and past their tips; one that still leaves less - "
+            "a Custom size, or one moved by hand - is flagged in the Connector panel with the "
+            "thickness that is left"
         ),
         default=0.8,
         min=0.0,

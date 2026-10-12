@@ -1132,6 +1132,54 @@ def test_a_thin_socket_wall_is_flagged():
     check(not plan.record_thin_walls(bpy.context, first), "and they are measured again")
 
 
+def test_connectors_leave_the_minimum_wall():
+    """A preset connector is sized and spread to leave Minimum Wall round every socket."""
+    print("== connectors leave the minimum wall")
+    real = plan.min_wall_mm
+    try:
+        for wall in (0.8, 1.2):
+            plan.min_wall_mm = lambda _context, wall=wall: wall
+            sc = reset_scene()
+            s = sc.esp
+            s.mode = 'PLAN'
+            s.size_preset = 'LARGE'  # 60% of a 4 mm face would leave 0.7 mm a side, less the clearance
+            plank = make_slab("Plank", size=(60.0, 4.0, 40.0))
+            rec = plan.add_record(bpy.context, plank, 'STRAIGHT', [section_contact(plank, 0.0)])
+            plan.measure_all_walls(bpy.context)
+            got = rec.pin_obj_a.get(plan.WALL_KEY)
+            what = f"Minimum Wall {wall}: a Large pin on a 4 mm plank"
+            check(rec.pin_width_mm < 0.6 * 4.0, f"{what} is made thinner ({rec.pin_width_mm:.2f} mm)")
+            check(got is not None and got >= wall - plan.WALL_TOLERANCE_MM, f"{what} leaves the wall ({got} mm)")
+            check(not plan.record_thin_walls(bpy.context, rec), f"{what} is not flagged")
+            u = plan.mm(bpy.context)
+            tip = rec.tip_extra_mm * u if rec.asymmetric else 0.0
+            check(
+                abs(plan.depth_limit_bu(bpy.context, rec, 10.0 * u) - (10.0 * u - tip - wall * u)) < 1e-6,
+                f"Minimum Wall {wall}: and past the tip of a pin on a shallow part",
+            )
+
+            # several on one face: the rim between two sockets is the wall too
+            s = reset_scene().esp
+            s.mode = 'PLAN'
+            s.pin_count = 3
+            slab = make_slab("Slab", size=(22.0, 10.0, 40.0))  # tight: the rims decide
+            rec = plan.add_record(bpy.context, slab, 'STRAIGHT', [section_contact(slab, 0.0)])
+            pin = rec.pin_obj_a
+            flat = list(pin["esp_layout"])
+            centres = [pin.matrix_world @ Vector((x, y, 0.0)) for x, y in zip(flat[::2], flat[1::2])]
+            socket = rec.pin_width_mm * u * 0.5 + rec.clearance_mm * u
+            gaps = [(a - b).length - 2.0 * socket for i, a in enumerate(centres) for b in centres[i + 1 :]]
+            check(
+                len(centres) > 1 and min(gaps) >= wall * u - 1e-4,
+                f"Minimum Wall {wall}: {len(centres)} sockets, {min(gaps, default=0):.2f} mm apart",
+            )
+            plan.measure_all_walls(bpy.context)
+            got = pin.get(plan.WALL_KEY)
+            check(got is not None and got >= wall - plan.WALL_TOLERANCE_MM, f"and to the outside ({got} mm)")
+    finally:
+        plan.min_wall_mm = real
+
+
 def test_a_cut_across_earlier_cuts_cuts_every_part():
     """A later cut runs across every part an earlier cut of the same plan made.
 
@@ -1841,6 +1889,7 @@ if __name__ == "__main__":
     test_the_plan_holds_its_objects_by_pointer()
     test_a_file_saved_with_names_opens_with_its_plan()
     test_a_thin_socket_wall_is_flagged()
+    test_connectors_leave_the_minimum_wall()
     test_a_cut_across_earlier_cuts_cuts_every_part()
     test_base_split_preview_points_like_the_build()
     test_the_preview_shows_every_connector_a_build_makes()
