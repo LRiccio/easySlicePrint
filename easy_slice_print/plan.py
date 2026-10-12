@@ -1570,7 +1570,8 @@ def add_record(context, target, cut_type, contacts):
         settings.active_cut = len(settings.cuts) - 1
     finally:
         _suspend -= 1
-    schedule_walls()
+    # the earlier cuts its surface runs across, or near, keep their connectors clear of it
+    refresh_other_cuts(context, rec, near=_record_bounds(rec))
     return rec
 
 
@@ -1762,7 +1763,11 @@ MIN_REGION_SAMPLES = 4
 
 
 class FaceRegions:
-    """A cut face divided by earlier cuts: which stretch a point is on, and room on it."""
+    """A cut face other cuts run across: which stretch a point is on, and room on it.
+
+    Only the earlier cuts divide it into stretches; `blockers` are every cut across it,
+    earlier or later, that a connector keeps clear of.
+    """
 
     def __init__(self, key, samples, labels, radius, material, blockers, obstacles=()):
         from mathutils.kdtree import KDTree
@@ -1772,7 +1777,7 @@ class FaceRegions:
         self.labels = labels
         self.radius = radius
         self.material = material
-        self.blockers = blockers  # (bvh of the earlier surface, half its kerf)
+        self.blockers = blockers  # (bvh of a surface across the face, half its kerf)
         self.tree = KDTree(len(samples))
         for i, q in enumerate(samples):
             self.tree.insert(q, i)
@@ -1833,7 +1838,16 @@ _regions_cache = {}
 
 
 def _surface_key(obj):
-    return (obj.name, tuple(round(v, 6) for v in flat(obj.matrix_world)), len(obj.data.vertices))
+    """What a cached answer about a preview depends on: which object, where, and its mesh.
+
+    A plane's section is taken again in place (same object, same transform), so a few of
+    its vertices are part of the key too.
+    """
+    me = obj.data
+    n = len(me.vertices)
+    probe = tuple(round(c, 6) for i in ((0, n // 2, n - 1) if n else ()) for c in me.vertices[i].co)
+    where = tuple(round(v, 6) for v in flat(obj.matrix_world))
+    return (getattr(obj, "session_uid", obj.name), obj.name, where, n, len(me.polygons), probe)
 
 
 def _socket_half(pin):
@@ -1862,38 +1876,101 @@ def _socket_half(pin):
     return bvh
 
 
-def record_regions(context, rec):
-    """FaceRegions of the record's cut face, or None when no earlier cut divides it."""
-    if contact_count(rec) != 1:
-        return None
-    settings = context.scene.esp
-    sobj = surface_of(rec, 0)
-    target = record_target(context, rec)
-    if sobj is None or target is None or target.type != 'MESH' or not len(sobj.data.polygons):
-        return None
+_surface_bvh_cache = {}
+
+
+def _surface_bvh(obj):
+    """BVH of a preview surface in world space, kept while the surface is unchanged."""
+    key = _surface_key(obj)
+    bvh = _surface_bvh_cache.get(key)
+    if bvh is None:
+        bvh = mesh_utils.bvh_from_pydata(*surface_world_patch(obj))
+        if len(_surface_bvh_cache) > 64:
+            _surface_bvh_cache.clear()
+        _surface_bvh_cache[key] = bvh
+    return bvh
+
+
+def other_cuts(context, rec):
+    """What else of the plan a connector of `rec` has to keep clear of.
+
+    -> (surfaces before, surfaces after, sockets before): (object, room) pairs. A cut
+    surface takes half its kerf; a socket of an earlier cut the room it is wider than its
+    pin. Every other cut's surface counts, in the build order or not: an earlier one has
+    divided the part by the time `rec` is cut, and a later one runs through whatever
+    `rec` left there - a connector across it is sliced, its socket opened. Only earlier
+    sockets count: a later cut places its connectors clear of this one's, not the other
+    way round. Cuts left out of the build count for nothing.
+    """
     u = mm(context)
-    # what an answer depends on, cheap to gather: the cache is asked on every settings
-    # change, and building the trees for a miss is what takes the time
-    surfaces_before, pins_before = [], []
-    for other in settings.cuts:
+    before, after, sockets = [], [], []
+    seen = False
+    for other in context.scene.esp.cuts:
         if other.name == rec.name:
-            break
+            seen = True
+            continue
         if not other.enabled:
             continue
         for i in range(contact_count(other)):
             o = surface_of(other, i)
             if o is not None and len(o.data.polygons):
-                surfaces_before.append((o, other.cut_gap_mm * u * 0.5))
-        if other.add_pin:
+                (after if seen else before).append((o, other.cut_gap_mm * u * 0.5))
+        if other.add_pin and not seen:
             socket = other.clearance_mm * u + (other.tip_extra_mm * u if other.asymmetric else 0.0)
             for pin in record_pins(other):
                 if len(pin.data.polygons):
-                    pins_before.append((pin, socket))
-    if not surfaces_before:
+                    sockets.append((pin, socket))
+    return before, after, sockets
+
+
+_stops_cache = {}
+
+
+def depth_stops(context, rec):
+    """[(bvh, room)] a pin of `rec` must stop short of along its axis (`_depth_scale`).
+
+    Every other cut's surface, wherever it is - one parallel to this cut, a few
+    millimetres on, crosses no part of the face and still slices a pin long enough to
+    reach it - and every earlier socket.
+    """
+    before, after, sockets = other_cuts(context, rec)
+    key = tuple((*_surface_key(o), round(room, 7)) for o, room in (*before, *after, *sockets))
+    if key in _stops_cache:
+        return _stops_cache[key]
+    out = [(_surface_bvh(o), half) for o, half in (*before, *after)]
+    for pin, room in sockets:
+        bvh = _socket_half(pin)
+        if bvh is not None:
+            out.append((bvh, room))
+    if len(_stops_cache) > 32:
+        _stops_cache.clear()
+    _stops_cache[key] = out
+    return out
+
+
+def record_regions(context, rec):
+    """FaceRegions of the record's cut face, or None when no other cut runs across it.
+
+    The face is divided into stretches by the earlier cuts across it - each stretch is
+    a part of its own by the time this cut is made, and gets a connector. A later cut
+    across it divides nothing yet, but runs through the face: the connectors are kept
+    clear of it like of an earlier one, all on their stretch.
+    """
+    if contact_count(rec) != 1:
+        return None
+    sobj = surface_of(rec, 0)
+    target = record_target(context, rec)
+    if sobj is None or target is None or target.type != 'MESH' or not len(sobj.data.polygons):
+        return None
+    # what an answer depends on, cheap to gather: the cache is asked on every settings
+    # change, and building the trees for a miss is what takes the time
+    surfaces_before, surfaces_after, pins_before = other_cuts(context, rec)
+    if not surfaces_before and not surfaces_after:
         return None
     key = (
         _surface_key(sobj),
         tuple((*_surface_key(o), round(half, 7)) for o, half in surfaces_before),
+        tuple((*_surface_key(o), round(half, 7)) for o, half in surfaces_after),
         tuple((*_surface_key(o), round(room, 7)) for o, room in pins_before),
         target.name,
         len(target.data.vertices),
@@ -1902,11 +1979,13 @@ def record_regions(context, rec):
         return _regions_cache[key]
     verts, faces = surface_world_patch(sobj)
     own = mesh_utils.bvh_from_pydata(verts, faces)
-    blockers = []
-    for o, half in surfaces_before:
-        bvh = mesh_utils.bvh_from_pydata(*surface_world_patch(o))
+    dividers, blockers = [], []
+    for o, half in (*surfaces_before, *surfaces_after):
+        bvh = _surface_bvh(o)
         if own.overlap(bvh):
             blockers.append((bvh, half))
+            if (o, half) in surfaces_before:
+                dividers.append(bvh)
     obstacles = []
     for pin, room in pins_before:
         bvh = _socket_half(pin)
@@ -1922,12 +2001,12 @@ def record_regions(context, rec):
                     verts,
                     faces,
                     surfaces.patch_normal(verts, faces),
-                    [b for b, _h in blockers],
+                    dividers,
                     lambda q: material(q) > 0.0,
                 )
-                if labels and max(labels) > 0:
+                if labels:
                     result = FaceRegions(key, samples, labels, radius, material, blockers, obstacles)
-                    if len(result.big) < 2:
+                    if not result.big:
                         result = None
         finally:
             restore_visibility(target, state)
@@ -2048,19 +2127,39 @@ def sync_extra_pins(context, rec, items, target):
         _update_extra_pin(context, rec, j)
 
 
-def refresh_cuts_after(context, rec):
-    """Measure again every cut after `rec`: how earlier cuts divide their faces changed."""
-    settings = context.scene.esp
+def refresh_other_cuts(context, rec, near=None):
+    """Measure again every cut but `rec`: `rec` changed what runs across their faces.
+
+    An earlier cut divides the faces of the cuts after it, and every cut - earlier or
+    later - is one the others keep their connectors clear of. `near` - (lo, hi) world
+    bounds - limits it to the cuts whose face or connectors come near them.
+    """
     schedule_walls()  # a cut in or out of the build is a wall more or less for every socket
-    after = False
-    for other in settings.cuts:
-        if after:
-            try:
-                refresh_record_frames(context, other, rebuild=False)
-            except Exception:
-                pass
-        elif other.name == rec.name:
-            after = True
+    for other in list(context.scene.esp.cuts):
+        if other.name == rec.name:
+            continue
+        if near is not None and not _bounds_meet(near, _record_bounds(other)):
+            continue
+        try:
+            refresh_record_frames(context, other, rebuild=False)
+        except Exception:
+            pass
+
+
+def _record_bounds(rec):
+    """World bounds of a record's surfaces and connectors, its pins' full reach included."""
+    pts = []
+    for obj in record_objects(rec):
+        if alive(obj) is not None and obj.type == 'MESH':
+            mw = obj.matrix_world
+            pts += [mw @ Vector(c) for c in obj.bound_box]
+    return _bounds(pts) if pts else None
+
+
+def _bounds_meet(a, b, margin=0.0):
+    if a is None or b is None:
+        return False
+    return all(a[0][k] - margin <= b[1][k] and b[0][k] - margin <= a[1][k] for k in range(3))
 
 
 def refresh_record_frames(context, rec, rebuild=True):
@@ -2159,10 +2258,10 @@ def remove_record(context, index):
         mesh_utils.remove_object(obj)
     settings.cuts.remove(index)
     settings.active_cut = min(index, len(settings.cuts) - 1)
-    # the cuts after it no longer have it dividing their faces
-    for later in list(settings.cuts)[index:]:
+    # no other cut has it across its face any more
+    for other in list(settings.cuts):
         try:
-            refresh_record_frames(context, later, rebuild=False)
+            refresh_record_frames(context, other, rebuild=False)
         except Exception:
             pass
 
@@ -2393,8 +2492,10 @@ def fit_depth(context, rec, spec, part):
 def fit_preview(context, rec, matrix, layout, regions=None):
     """A preview pin's matrix, as short as the build will make it (`fit_depth`).
 
-    On a cut the plan's earlier cuts divide (`regions`), their surfaces and sockets are
-    in the way as well - the part the build cuts will have them.
+    The other cuts of the plan and the earlier sockets are in the way as well
+    (`depth_stops`): the part the build cuts will have the earlier ones, and a later
+    cut slices through a pin that reaches it. `regions` is no longer needed for that,
+    and is ignored.
     """
     if rec.size_preset == 'CUSTOM' or not rec.add_pin:
         return matrix
@@ -2406,7 +2507,7 @@ def fit_preview(context, rec, matrix, layout, regions=None):
     footprint = [matrix @ Vector(xy) for xy in {(round(v.co.x, 5), round(v.co.y, 5), 0.0) for v in bm.verts}]
     unit_reach = max((abs(v.co.z) for v in bm.verts), default=1.0)
     bm.free()
-    extra = (*regions.blockers, *regions.obstacles) if regions is not None else ()
+    extra = depth_stops(context, rec)
     state = ensure_evaluable(target)
     try:
         k = _depth_scale(context, rec, matrix, footprint, unit_reach, target, context.evaluated_depsgraph_get(), extra)
@@ -2807,20 +2908,22 @@ def _refresh_dirty():
         return 0.1
     names = list(_dirty)
     _dirty = {}
-    moved = False
+    moved = []
     for rec in scene.esp.cuts:
         if any(o is not None and o.name in names for o in (surface_of(rec, 0), surface_of(rec, 1))):
-            moved = True
+            moved.append(rec.name)
             try:
                 refresh_record_frames(bpy.context, rec)
             except Exception:
                 pass
-        elif moved:
-            # a cut after a moved one: the moved surface may divide its face differently
-            try:
-                refresh_record_frames(bpy.context, rec, rebuild=False)
-            except Exception:
-                pass
+    if moved:
+        # every other cut: the moved surface may run across its face, or no longer
+        for rec in scene.esp.cuts:
+            if rec.name not in moved:
+                try:
+                    refresh_record_frames(bpy.context, rec, rebuild=False)
+                except Exception:
+                    pass
     return None
 
 

@@ -163,6 +163,13 @@ All notable changes to this project are documented here. The format follows
   rather than the pin. A preset pin on a small face gets thinner to keep it (never under 1 mm),
   an extra connector is only placed where it fits with its walls, and changing the preference
   lays every planned connector out again.
+- **A later cut no longer slices an earlier cut's connector.** A cut placed its connectors
+  clear of the cuts before it only: a cut drawn afterwards across the same face, or parallel to
+  it a few millimetres on, could run right through the pin or open its socket, and nothing
+  moved. Every other cut of the plan now counts, whatever its place in the order: a connector
+  stays on its own side of a cut across its face, with *Minimum Wall* to spare, and a pin
+  reaching towards a cut stops short of it. Adding, moving, removing or switching a cut lays out
+  the connectors of the cuts around it again.
 
 ## [0.3.7-alpha] - 2026-09-21
 

@@ -215,10 +215,10 @@ def connector_props(update=None):
 
 
 def _record_enabled_update(self, context):
-    """A cut switched in or out of the build changes how the cuts after it divide the parts."""
+    """A cut switched in or out of the build is one more or less for the others to keep clear of."""
     from . import plan
 
-    plan.refresh_cuts_after(context, self)
+    plan.refresh_other_cuts(context, self)
 
 
 class ESP_ExtraPin(bpy.types.PropertyGroup):
