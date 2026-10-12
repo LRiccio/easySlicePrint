@@ -170,6 +170,13 @@ All notable changes to this project are documented here. The format follows
   stays on its own side of a cut across its face, with *Minimum Wall* to spare, and a pin
   reaching towards a cut stops short of it. Adding, moving, removing or switching a cut lays out
   the connectors of the cuts around it again.
+- **A socket keeps its wall all the way down, not only at the cut face.** A connector was
+  placed with room round it on the face itself, but a socket runs some millimetres into the
+  part: where the part narrows away from the cut, or an earlier socket or a leaning cut comes
+  closer further down, the wall there could still be a skin. Each planned preset connector is
+  now checked over its whole socket and, where needed, made a little smaller — width and height
+  together, never under 1 mm — until it keeps *Minimum Wall*; the Connector panel says when a
+  pin was narrowed. A *Custom* size is left as typed and flagged instead.
 
 ## [0.3.7-alpha] - 2026-09-21
 

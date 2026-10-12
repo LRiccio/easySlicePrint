@@ -2138,7 +2138,7 @@ def refresh_other_cuts(context, rec, near=None):
     for other in list(context.scene.esp.cuts):
         if other.name == rec.name:
             continue
-        if near is not None and not _bounds_meet(near, _record_bounds(other)):
+        if near is not None and not _bounds_meet(near, _record_bounds(other), WALL_CAP_MM * mm(context)):
             continue
         try:
             refresh_record_frames(context, other, rebuild=False)
@@ -2513,7 +2513,90 @@ def fit_preview(context, rec, matrix, layout, regions=None):
         k = _depth_scale(context, rec, matrix, footprint, unit_reach, target, context.evaluated_depsgraph_get(), extra)
     finally:
         restore_visibility(target, state)
-    return matrix if k >= 1.0 else matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))
+    if k < 1.0:
+        matrix = matrix @ Matrix.Diagonal((1.0, 1.0, k, 1.0))
+    offsets = layout.offsets if layout is not None and layout.placed > 1 else None
+    return fit_walls(context, rec, matrix, shape, custom, offsets, target)
+
+
+def narrowed_width_mm(context, rec, i):
+    """The width `fit_walls` brought contact `i`'s connector down to (mm), or None if it did not."""
+    pin = pin_of(rec, i)
+    if pin is None or rec.size_preset == 'CUSTOM' or not rec.add_pin:
+        return None
+    w, _h = contact_size_bu(context, rec, _contact_attr(rec, "inscribed", i), _contact_attr(rec, "depth", i))
+    w *= float(pin.get("esp_layout_scale", 1.0))
+    fitted = unflat(_contact_attr(rec, "pin_auto", i)).col[0].xyz.length
+    return fitted / mm(context) if fitted < w * 0.99 else None
+
+
+_fit_walls_cache = {}
+
+
+def fit_walls(context, rec, matrix, shape, custom, offsets, target):
+    """`matrix` made smaller, if that is what keeps Minimum Wall round the socket all the way down.
+
+    The connector is placed on the face with its walls to everything the face shows
+    (`compute_layout`, `record_regions`) and stopped short of what is in line with it
+    (`fit_preview`). A socket still passes close to something off to its side further
+    down: the outside of a part that narrows, an earlier socket running alongside, a
+    cut leaning towards it. The whole connector is then scaled down - width and height,
+    about its foot on the face - just as far as that wall needs, never under 1 mm wide.
+    When even that leaves too thin a wall, the size is kept and the panel says so.
+
+    It keeps clear of every other cut's surface and of the earlier cuts' sockets, as the
+    placement does; a later cut's connectors keep clear of this one's.
+    """
+    u = mm(context)
+    wall = min_wall_bu(context)
+    width = matrix.col[0].xyz.length
+    if width <= 0.0:
+        return matrix
+    settings = context.scene.esp
+    order = [r.name for r in settings.cuts]
+    index = order.index(rec.name) if rec.name in order else len(order)
+    later = {p for r in list(settings.cuts)[index + 1 :] for p in record_pins(r)}
+    own = set(record_objects(rec))
+    obstacles = _wall_obstacles(context, settings)
+    key = (
+        tuple(round(v, 6) for v in flat(matrix)),
+        rec.shape,
+        tuple(offsets or ()),
+        tuple(round(r, 7) for r in socket_room(context, rec)),
+        round(wall, 7),
+        _obstacles_cache.get("key"),
+        getattr(target, "session_uid", target.name),
+        len(target.data.vertices),
+        tuple(round(v, 6) for v in flat(target.matrix_world)),
+    )
+    if key in _fit_walls_cache:
+        k = _fit_walls_cache[key]
+        return matrix if k >= 1.0 else matrix @ Matrix.Diagonal((k, k, k, 1.0))
+    step = _wall_step(context)
+
+    def wall_at(k):
+        m = matrix @ Matrix.Diagonal((k, k, k, 1.0))
+        bm = _socket_bmesh_at(context, rec, m, shape=shape, custom=custom, offsets=offsets)
+        points, bounds = _bmesh_samples(bm, step)
+        found = _wall_round(context, target, points, bounds, obstacles, own | later, own)
+        return found[0] if found is not None else wall
+
+    k = 1.0
+    if wall_at(1.0) < wall - 1e-6:
+        low = min(PIN_MIN_WIDTH_MM * u / width, 1.0)
+        if low < 1.0 and wall_at(low) >= wall - 1e-6:
+            high = 1.0
+            for _step in range(7):
+                mid = (low + high) * 0.5
+                if wall_at(mid) >= wall - 1e-6:
+                    low = mid
+                else:
+                    high = mid
+            k = low
+    if len(_fit_walls_cache) > 128:
+        _fit_walls_cache.clear()
+    _fit_walls_cache[key] = k
+    return matrix if k >= 1.0 else matrix @ Matrix.Diagonal((k, k, k, 1.0))
 
 
 # ----------------------------------------------------------------------------
@@ -2572,9 +2655,13 @@ def socket_bmesh(context, rec, pin):
     me = pin_unit_mesh(pin)
     if me is None:
         return None
+    return _socket_bmesh_at(context, rec, pin.matrix_basis.copy(), unit_mesh=me)
+
+
+def _socket_bmesh_at(context, rec, matrix, unit_mesh=None, shape=None, custom=None, offsets=None):
+    """`socket_bmesh` for a connector not made yet: aimed by `matrix`, of `unit_mesh` or `shape`."""
     side, tip = socket_room(context, rec)
-    matrix = pin.matrix_basis.copy()
-    bm = connectors.connector_bmesh(None, None, matrix, side, tip, unit_mesh=me)
+    bm = connectors.connector_bmesh(shape, custom, matrix, side, tip, unit_mesh=unit_mesh, offsets=offsets)
     bmesh.ops.bisect_plane(
         bm,
         geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
@@ -2618,7 +2705,11 @@ def socket_samples(context, rec, pin, step):
 
     -> (points, (lo, hi) bounds), or ([], None).
     """
-    bm = socket_bmesh(context, rec, pin)
+    return _bmesh_samples(socket_bmesh(context, rec, pin), step)
+
+
+def _bmesh_samples(bm, step):
+    """`socket_samples` of a socket bmesh, which it frees."""
     if bm is None:
         return [], None
     try:
@@ -2646,17 +2737,24 @@ def _wall_obstacles(context, settings):
     count; the order of the cuts does not matter - a later cut passing a socket thins
     its wall just the same.
     """
-    out = []
     u = mm(context)
+    key = []
+    for rec in settings.cuts:
+        if rec.enabled:
+            room = (round(rec.cut_gap_mm, 6), rec.add_pin, *(round(r, 7) for r in socket_room(context, rec)))
+            key.append((rec.name, room, *(_surface_key(o) for o in record_objects(rec) if alive(o) is not None)))
+    key = tuple(key)
+    if _obstacles_cache.get("key") == key:
+        return _obstacles_cache["value"]
+    out = []
     for rec in settings.cuts:
         if not rec.enabled:
             continue
         for i in range(contact_count(rec)):
             sobj = surface_of(rec, i)
             if sobj is not None and len(sobj.data.polygons):
-                verts, faces = surface_world_patch(sobj)
-                bvh = mesh_utils.bvh_from_pydata(verts, faces)
-                out.append((sobj, bvh, rec.cut_gap_mm * u * 0.5, _bounds(verts), rec.name))
+                verts, _faces = surface_world_patch(sobj)
+                out.append((sobj, _surface_bvh(sobj), rec.cut_gap_mm * u * 0.5, _bounds(verts), rec.name))
         if rec.add_pin:
             for pin in record_pins(rec):
                 bm = socket_bmesh(context, rec, pin)
@@ -2670,7 +2768,11 @@ def _wall_obstacles(context, settings):
                 finally:
                     bm.free()
                 out.append((pin, bvh, 0.0, bounds, rec.name))
+    _obstacles_cache.update(key=key, value=out)
     return out
+
+
+_obstacles_cache = {}
 
 
 def socket_wall(context, rec, pin, obstacles=()):
@@ -2685,20 +2787,27 @@ def socket_wall(context, rec, pin, obstacles=()):
     target = record_target(context, rec)
     if pin is None or target is None or target.type != 'MESH':
         return None
-    u = mm(context)
-    cap = WALL_CAP_MM * u
-    step = max(min_wall_mm(context) * u * 0.5, cap * 0.02)
-    points, bounds = socket_samples(context, rec, pin, step)
+    own = set(record_objects(rec))
+    skip = {o for o in own if o.get("esp_preview") == 'surface'} | {pin}  # its own face is where it opens
+    points, bounds = socket_samples(context, rec, pin, _wall_step(context))
+    return _wall_round(context, target, points, bounds, obstacles, skip, own)
+
+
+def _wall_step(context):
+    """How far apart the points a wall is measured from are: half of Minimum Wall."""
+    return max(min_wall_bu(context) * 0.5, WALL_CAP_MM * mm(context) * 0.02)
+
+
+def _wall_round(context, target, points, bounds, obstacles, skip=(), own=()):
+    """(thinnest wall, against what) from socket `points` to the model and `obstacles`."""
     if not points:
         return None
+    cap = WALL_CAP_MM * mm(context)
     best, near = cap, ""
-    own = set(record_objects(rec))
     lo, hi = bounds
     lo, hi = lo - Vector((cap,) * 3), hi + Vector((cap,) * 3)
     for obj, bvh, room, (olo, ohi), name in obstacles:
-        if obj in own and obj.get("esp_preview") == 'surface':
-            continue  # the cut's own face is where the socket opens
-        if obj == pin or any(olo[k] > hi[k] or ohi[k] < lo[k] for k in range(3)):
+        if obj in skip or any(olo[k] > hi[k] or ohi[k] < lo[k] for k in range(3)):
             continue
         label = "another connector of this cut" if obj in own else name
         for p in points:
@@ -2969,19 +3078,18 @@ _pending_after = set()
 
 
 def schedule_cuts_after(rec):
-    """Measure the divided cuts after `rec` again once its settings stop changing.
+    """Measure the cuts after `rec` again once its settings stop changing.
 
+    A later cut keeps its connectors clear of this one's sockets - on its face when this
+    cut divides it, and all the way down its pins when they pass near (`fit_walls`).
     Debounced: a width slider being dragged changes the record dozens of times a second,
-    and every cut after it with an extra connector would be measured again each time.
+    and every cut after it would be measured again each time.
     """
     settings = bpy.context.scene.esp if bpy.context.scene is not None else None
     if settings is None:
         return
     names = [r.name for r in settings.cuts]
-    if rec.name not in names:
-        return
-    later = settings.cuts[names.index(rec.name) + 1 :]
-    if not any(r.region >= 0 or len(r.extras) for r in later):
+    if rec.name not in names or rec.name == names[-1]:
         return
     _pending_after.add(rec.name)
     if not bpy.app.timers.is_registered(_refresh_pending_after):
@@ -2999,8 +3107,11 @@ def _refresh_pending_after():
     first = min((order.index(n) for n in names if n in order), default=None)
     if first is None:
         return None
+    margin = WALL_CAP_MM * mm(bpy.context)
+    changed = [_record_bounds(r) for r in settings.cuts if r.name in names]
     for rec in list(settings.cuts)[first + 1 :]:
-        if rec.region >= 0 or len(rec.extras):
+        near = any(_bounds_meet(b, _record_bounds(rec), margin) for b in changed)
+        if rec.region >= 0 or len(rec.extras) or near:
             try:
                 refresh_record_frames(bpy.context, rec, rebuild=False)
             except Exception:

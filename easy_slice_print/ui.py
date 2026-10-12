@@ -147,6 +147,11 @@ def _depth_note(layout, context, rec):
             _w, h = plan.contact_size_bu(context, rec, getattr(rec, f"inscribed_{'ab'[i]}"))
             if h > limit:
                 layout.label(text=f"{where}height cut to {max(limit, 0.0) / u:.1f} mm by the part's depth", icon='INFO')
+    for i in range(plan.contact_count(rec)):
+        narrowed = plan.narrowed_width_mm(context, rec, i)
+        if narrowed is not None:
+            where = f"Contact {i + 1}: " if rec.two_contact else ""
+            layout.label(text=f"{where}pin narrowed to {narrowed:.1f} mm to keep its walls", icon='INFO')
 
 
 def _wall_note(layout, context, rec):

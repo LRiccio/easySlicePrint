@@ -1218,6 +1218,54 @@ def test_a_connector_stops_short_of_a_later_cut():
     check(pin.matrix_world.col[2].xyz.length / u > 8.0, "the later cuts gone, it is long again")
 
 
+def make_diamond(name="Diamond", mid=10.0, end=2.0, half_height=10.0):
+    """Two square frustums foot to foot: widest at z=0, narrowing fast either way."""
+    me = bpy.data.meshes.new(name)
+    rings = [(-half_height, end), (0.0, mid), (half_height, end)]
+    verts = [(sx * w / 2, sy * w / 2, z) for z, w in rings for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    faces = [(3, 2, 1, 0), (8, 9, 10, 11)]
+    for r in range(2):
+        for i in range(4):
+            a, b = r * 4 + i, r * 4 + (i + 1) % 4
+            faces.append((a, b, b + 4, a + 4))
+    me.from_pydata(verts, [], faces)
+    me.update()
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    return obj
+
+
+def test_a_connector_shrinks_to_keep_its_wall():
+    """A socket closing in on the outside further down is made smaller to keep its wall."""
+    print("== a connector shrinks to keep its wall")
+    sc = reset_scene()
+    s = sc.esp
+    s.mode = 'PLAN'
+    gem = make_diamond()
+    non, boundary, _t = mesh_utils.manifold_report(gem.data)
+    check(non == 0 and boundary == 0, "the model is closed")
+    rec = plan.add_record(bpy.context, gem, 'STRAIGHT', [section_contact(gem, 0.0)])
+    pin = rec.pin_obj_a
+    u = plan.mm(bpy.context)
+    width = pin.matrix_world.col[0].xyz.length / u
+    check(width < rec.pin_width_mm - 0.05, f"the pin is made smaller: {width:.2f} mm, not {rec.pin_width_mm:.2f}")
+    narrowed = plan.narrowed_width_mm(bpy.context, rec, 0)
+    check(narrowed is not None and abs(narrowed - width) < 0.01, f"and the panel says so ({narrowed})")
+    draw_all_panels(bpy.context)
+    plan.measure_all_walls(bpy.context)
+    wall = pin.get(plan.WALL_KEY)
+    check(not plan.record_thin_walls(bpy.context, rec), f"and keeps its wall all the way down ({wall} mm)")
+    check(bpy.ops.esp.build() == {'FINISHED'}, "it builds")
+    bpy.ops.esp.return_to_plan()
+    rec.size_preset = 'CUSTOM'
+    rec.pin_width_mm = width + 1.0
+    plan.measure_all_walls(bpy.context)
+    width = rec.pin_obj_a.matrix_world.col[0].xyz.length / u
+    check(abs(width - rec.pin_width_mm) < 1e-3, "a Custom size is left as typed")
+    check(plan.record_thin_walls(bpy.context, rec), "and its thin wall is flagged instead")
+
+
 def test_a_cut_across_earlier_cuts_cuts_every_part():
     """A later cut runs across every part an earlier cut of the same plan made.
 
@@ -1929,6 +1977,7 @@ if __name__ == "__main__":
     test_a_thin_socket_wall_is_flagged()
     test_connectors_leave_the_minimum_wall()
     test_a_connector_stops_short_of_a_later_cut()
+    test_a_connector_shrinks_to_keep_its_wall()
     test_a_cut_across_earlier_cuts_cuts_every_part()
     test_base_split_preview_points_like_the_build()
     test_the_preview_shows_every_connector_a_build_makes()
